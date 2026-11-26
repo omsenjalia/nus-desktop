@@ -200,3 +200,17 @@ test('the dist script builds the lines before it packs them', () => {
   assert.match(pkg.scripts.dist, /^node scripts\/make-voice-lines\.js/);
   assert.match(pkg.scripts.dist, /electron-builder --win/);
 });
+
+test('a failed whisper fetch says why, in the one place that can be read', () => {
+  // The step fetches a GitHub release and a Hugging Face model, and when it
+  // failed the run log lived in blob storage while the annotation said only
+  // "exit code 1". It now writes the tail of its output into an annotation and
+  // the whole log into an artifact — the same deal the Test step made.
+  const body = stepBody('Fetch the whisper binary the Windows build bundles');
+  assert.match(body, /npm run setup:voice/, 'it still runs the script');
+  assert.match(body, /\$LASTEXITCODE/, 'it reads the exit code rather than trusting the pipe');
+  assert.match(body, /::error title=setup:voice failed::/, 'the reason is an annotation');
+  assert.match(body, /-Tail 40/, 'the end of the output, which is where the error is');
+  assert.match(body, /exit \$code/, 'and the step still fails');
+  assert.match(workflow, /name: setup-voice-output/, 'with the full log attached as an artifact');
+});

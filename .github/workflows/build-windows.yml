@@ -140,8 +140,25 @@ jobs:
           # No restore-keys: a partial whisper directory is a broken one, and
           # setup:voice treats a stale binary as done (findExe succeeds).
 
+      # setup:voice reaches two networks that are not npm (a GitHub release and
+      # Hugging Face), and when it fails the run log is unreadable from outside,
+      # exactly like the Test step's was. Same treatment: the reason goes into
+      # the annotation, the whole output into an artifact. A four-second red
+      # step that says only "exit code 1" is the failure this replaces.
       - name: Fetch the whisper binary the Windows build bundles
-        run: npm run setup:voice
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'setup-voice.log'
+          npm run setup:voice 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = (Get-Content $log -Tail 40) -join "`n"
+            if ($tail.Length -gt 60000) { $tail = $tail.Substring($tail.Length - 60000) }
+            if (-not $tail) { $tail = 'setup:voice failed and printed nothing.' }
+            Write-Output "::error title=setup:voice failed::$($tail -replace "`r?`n", '%0A')"
+            Copy-Item $log (Join-Path $env:GITHUB_WORKSPACE 'setup-voice.log') -Force
+          }
+          exit $code
 
       # The pre-made voice lines are the slowest thing in this build: a few
       # hundred short WAVs, synthesized one at a time on the runner's CPU. That
@@ -254,6 +271,16 @@ jobs:
         with:
           name: test-output
           path: test-output.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # And the same for the step that fetches the whisper binary, which is the
+      # one non-npm download the build depends on.
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('setup-voice.log') != '' }}
+        with:
+          name: setup-voice-output
+          path: setup-voice.log
           if-no-files-found: ignore
           retention-days: 14
 

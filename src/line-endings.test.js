@@ -99,15 +99,29 @@ test('a test that reads a file for an exact substring normalises it first, where
 });
 
 test('the test script does not rely on a shell expanding a glob', () => {
-  // `node --test src/*.test.js` works because bash and zsh expand the glob
-  // before node sees it. cmd.exe does not expand globs, so on a Windows runner
-  // node receives the literal string. It happens to work (node --test reads it
-  // as a pattern), but a script that depends on which shell runs it is a script
-  // that fails on someone else's machine. Quoted, node does the expansion
-  // itself, identically everywhere.
+  // This was written the other way round first, and the wrong way passed.
+  //
+  // Quoting the glob (`node --test 'src/*.test.js'`) is what works on bash and
+  // what broke Windows, not the fix: bash strips the quotes and node expands
+  // the pattern, but cmd.exe has no single-quote quoting and no globbing, so it
+  // hands node the string *including* the quote characters. node matches no
+  // file, prints `# tests 0`, and exits 0. The Windows Test step was green in
+  // zero seconds while running nothing at all.
+  //
+  // A script whose meaning depends on which shell npm started is the bug. So
+  // no glob at all: the patterns live in scripts/run-tests.js, node expands
+  // them identically on every platform, and an empty find is an error.
   const pkg = JSON.parse(read('package.json'));
   assert.equal(typeof pkg.scripts.test, 'string');
-  assert.doesNotMatch(pkg.scripts.test, /\s(src|companion\/test)\/\*\.test\.js/, 'the glob must be quoted');
-  assert.match(pkg.scripts.test, /'src\/\*\.test\.js'|"src\/\*\.test\.js"/, 'quoted, so node expands it');
-  assert.match(pkg.scripts.test, /'companion\/test\/\*\.test\.js'|"companion\/test\/\*\.test\.js"/);
+  assert.doesNotMatch(pkg.scripts.test, /[*?[\]]/, 'no glob for a shell to expand, on any platform');
+  assert.doesNotMatch(pkg.scripts.test, /['"]/, 'no quoted pattern that only one shell strips');
+  assert.match(pkg.scripts.test, /node scripts\/run-tests\.js$/);
+
+  const runner = read('scripts/run-tests.js');
+  // The same two directories the quarantined globs named, expanded one level
+  // deep in node.
+  assert.match(runner, /const suites = \['src', 'companion\/test'\]/);
+  assert.match(runner, /endsWith\('\.test\.js'\)/, 'it collects *.test.js files');
+  assert.match(runner, /files\.length === 0[\s\S]*?process\.exit\(1\)/, 'finding nothing fails instead of passing');
+  assert.match(runner, /spawnSync\(process\.execPath, \['--test'/, 'the runner starts node --test itself');
 });
