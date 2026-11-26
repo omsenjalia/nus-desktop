@@ -66,7 +66,7 @@ gh workflow run build-windows -f bundle_voice=false
 ```
 
 That leaves the model out of `extraResources` (`NUS_SKIP_VOICE_BUNDLE=1`
-locally) and the installers drop to about a fifth of the size; the app downloads
+locally) and the installers drop to about a quarter of the size (129 MB against 461 MB, measured 2026-11-26); the app downloads
 the voice on first run, which is the same repair path an install whose bundled
 copy is missing already uses. The artifacts are named `jarvis-setup-no-voice`
 and `jarvis-portable-no-voice` so a light build cannot be mistaken for a

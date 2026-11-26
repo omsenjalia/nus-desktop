@@ -111,6 +111,33 @@ test('a downloaded update asks, and Restart now restarts', async () => {
   assert.equal(updater.calls.quitAndInstall, 1);
 });
 
+test('the popup is parented to the window, so it is in front of the app', async () => {
+  const parentCalls = [];
+  const window = { isDestroyed: () => false };
+  const dialog = {
+    asked: [],
+    showMessageBox: async (first, second) => {
+      parentCalls.push(second ? 'parented' : 'floating');
+      dialog.asked.push(second || first);
+      return { response: 1 };
+    },
+  };
+  const { updater } = start({ dialog, window });
+  updater.emit('update-downloaded', { version: '0.4.0' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(parentCalls, ['parented']);
+});
+
+test('a window that is already closed is not a parent', async () => {
+  const window = { isDestroyed: () => true };
+  let sawParent = true;
+  const dialog = { showMessageBox: async (first, second) => { sawParent = Boolean(second); return { response: 1 }; } };
+  const { updater } = start({ dialog, window });
+  updater.emit('update-downloaded', { version: '0.4.0' });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(sawParent, false, 'a destroyed window would throw instead of showing');
+});
+
 test('Later does not restart, and the update still lands on quit', async () => {
   const dialog = fakeDialog(1);
   const { updater } = start({ dialog });

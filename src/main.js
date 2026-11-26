@@ -828,9 +828,11 @@ app.whenReady().then(async () => {
 
   if (pendingProtocolUrl) await processProtocolUrl(pendingProtocolUrl);
 
-  // Checks GitHub releases, downloads in the background, installs on next quit.
-  // No-ops in dev and for the portable build. Never throws into boot.
-  if (!SMOKE) initAutoUpdate();
+  // Checks GitHub releases, downloads in the background, and asks before
+  // restarting into the new version (Later installs on the next quit). Parented
+  // to the window so the popup is in front of it. No-ops in dev and for the
+  // portable build; never throws into boot.
+  if (!SMOKE) initAutoUpdate({ window: win });
 
   companion = companionApp.initCompanion({
     // No captureAllowanceMs and no onCaptureLimit: personal builds listen for as

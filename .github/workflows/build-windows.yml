@@ -16,8 +16,9 @@
 #                    (src/updater.js: it downloads changed blocks, not the file)
 #   jarvis-portable  JARVIS-Portable.exe on its own
 # `bundle_voice=false` builds both without the 334 MB voice model, for
-# iterating on code; the app downloads the voice on first run. Those are named
-# -no-voice so a light build cannot be mistaken for one to publish.
+# iterating on code: 129 MB instead of 461 MB. The app downloads the voice on
+# first run. Those artifacts are named -no-voice so a light build cannot be
+# mistaken for one to publish.
 #
 # Repository secrets, set once. None are required for the build to succeed: the
 # app is usable with only an AI key pasted in Settings, and an empty value is
@@ -39,9 +40,10 @@ on:
         default: false
       # The Fable voice model is 334 MB of the ~460 MB installer, and it changes
       # about once a year. Off is the build for iterating on a code change: the
-      # installer drops to a fifth of the size, and the app downloads the model
-      # on first run (companion/src/voice/index.js install(), the repair path
-      # that already existed). On is every build a person installs.
+      # installer drops to about a quarter (129 MB against 461 MB) and the app
+      # downloads the model on first run, through the repair path
+      # companion/src/voice/index.js install() already had. On is every build a
+      # person installs, and it stays the default.
       bundle_voice:
         description: 'Bundle the 334 MB voice model (off = small build, app downloads it)'
         type: boolean

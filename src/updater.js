@@ -49,6 +49,7 @@ function initAutoUpdate({
   intervalMs = 4 * HOUR,
   timers = { setInterval, clearInterval },
   now = Date.now,
+  window: parentWindow,
   onError,
   log = console,
 } = {}) {
@@ -88,7 +89,7 @@ function initAutoUpdate({
     const version = info && info.version ? String(info.version) : '';
     let choice = 1;               // no dialog, no restart
     if (dialog && typeof dialog.showMessageBox === 'function') {
-      const answer = await dialog.showMessageBox({
+      const options = {
         type: 'info',
         // Default to the restart: the thing a person wants when they have
         // already said yes to an update is for it to be done.
@@ -99,7 +100,12 @@ function initAutoUpdate({
         title: 'A new JARVIS is ready',
         message: version ? `JARVIS ${version} has been downloaded.` : 'An update has been downloaded.',
         detail: 'Restart to finish installing it. Choose Later and it installs the next time you quit.\n\nYour notes, settings and data are not touched: the update replaces the app.',
-      });
+      };
+      // Parented to the window when there is one, so the popup is in front of
+      // the app rather than behind it or on another display. A window that has
+      // already been closed is not a parent.
+      const parent = parentWindow && typeof parentWindow.isDestroyed === 'function' && !parentWindow.isDestroyed() ? parentWindow : null;
+      const answer = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
       choice = answer && typeof answer.response === 'number' ? answer.response : 1;
     }
     if (choice !== 0) {
