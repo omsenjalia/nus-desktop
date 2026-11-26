@@ -38,7 +38,7 @@ const companionApp = require('../companion');
 // validation and the dashboard's picker cannot drift.
 const COMPANION_PROVIDERS = ['gemini', 'openai', 'anthropic', 'nvidia', 'ollama', 'groq', 'openrouter', 'opencode', 'custom'];
 
-const RENDERER_PREFERENCE_KEYS = new Set(['gpa_scale', 'brain_viewport', 'brain_layout', 'email_accounts', 'email_default', 'onboarded', 'focus_areas', 'auth_prompted', 'theme', 'ai_model']);
+const RENDERER_PREFERENCE_KEYS = new Set(['gpa_scale', 'brain_viewport', 'brain_layout', 'email_accounts', 'email_default', 'onboarded', 'focus_areas', 'auth_prompted', 'theme', 'launch_at_login', 'automations_paused', 'companion_transcript_retention_days', 'storage_cap_mb']);
 const crashHandlers = installCrashHandlers(app, dialog);
 
 let gcalCache = [];
@@ -127,8 +127,12 @@ function showDesktopWindow() {
   else { if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 }
 
+// Set by Erase all data: the last save must not recreate the folder the wipe
+// just deleted. The relaunch boots into a blank slate instead.
+let wipingAll = false;
+
 const guardQuit = createQuitGuard({
-  flush: () => (databaseReady ? api.flushPersist() : { ok: true }),
+  flush: () => (databaseReady && !wipingAll ? api.flushPersist() : { ok: true }),
   ask: async (outcome) => {
     const { response } = await dialog.showMessageBox({
       type: 'warning',
@@ -200,10 +204,31 @@ function sendToDesktop(channel, data) {
   if (win && !win.isDestroyed()) win.webContents.send(channel, data);
 }
 
+// Device-level controls that must hold from the first second of the run: login
+// item, storage cap, and the retention window for old companion transcripts.
+function applyDevicePreferences() {
+  const prefs = require('./settings-file').getPreferences();
+  try {
+    if (process.platform !== 'linux') app.setLoginItemSettings({ openAtLogin: prefs.launch_at_login === true });
+  } catch { /* some environments refuse login items; the switch simply does not stick */ }
+  try {
+    const capMb = Number(prefs.storage_cap_mb);
+    if (Number.isFinite(capMb) && capMb > 0) api.setStorageCapBytes(Math.floor(capMb * 1024 * 1024));
+  } catch { /* default cap stands */ }
+  try {
+    const days = Number(prefs.companion_transcript_retention_days);
+    if (Number.isFinite(days) && days > 0) {
+      const cutoff = new Date(Date.now() - days * 86400000).toISOString();
+      api.deleteCompanionTranscripts(cutoff);
+    }
+  } catch { /* retention is best effort; transcripts stay rather than disappear silently */ }
+}
+
 async function refreshLicense() {
   if (!licenseManager || !usageLimits) return { plan: 'personal', isPro: true, source: 'not_ready' };
   const state = await licenseManager.refresh();
-  api.setStorageCapBytes(usageLimits.storageCapBytes());
+  const capPref = Number(require('./settings-file').getPreferences().storage_cap_mb);
+  api.setStorageCapBytes(Number.isFinite(capPref) && capPref > 0 ? Math.floor(capPref * 1024 * 1024) : usageLimits.storageCapBytes());
   sendToDesktop('license:changed', { ...state, usage: usageLimits.summary() });
   return state;
 }
@@ -358,7 +383,7 @@ function appState() {
     integrations: api.listIntegrations(),
     automations,
     repeated_signals: api.repeatedTaskSignals(),
-    preferences: api.getPreferences(),
+    preferences: { ...api.getPreferences(), ...require('./settings-file').getPreferences() },
     ranked: rankedToday(),
     gpa: projectedGpa(),
     gcal_events: gcalCache,
@@ -438,6 +463,7 @@ function withCronNext(automation) {
 }
 
 function runDueAutomations() {
+  try { if (require('./settings-file').getPreferences().automations_paused === true) return; } catch { /* preferences unreadable: run them */ }
   const now = new Date();
   for (const automation of api.dueAutomations(now.toISOString())) {
     const action = safeJson(automation.action_json);
@@ -773,10 +799,13 @@ async function assistantExecute(proposal) {
 app.whenReady().then(async () => {
   await open(path.join(app.getPath('userData'), 'data'));
   databaseReady = true;
+  // One JSON file now holds preferences and keys; the SQLite preferences are
+  // read once to seed it, then the JSON file is the source of truth.
+  require('./settings-file').init({ userDataDir: app.getPath('userData'), legacyPreferences: () => { try { return api.getPreferences(); } catch { return {}; } } });
+  applyDevicePreferences();
   secrets.init(path.join(app.getPath('userData')));
   style.init(path.join(app.getPath('userData')));
   sttLocal.init({ userData: app.getPath('userData') });
-  ai.setModel(api.getPreferences().ai_model || null);
   bridgeFile = path.join(app.getPath('userData'), 'context.json');
   // Personal build: no account session to restore, and no subscription to
   // check. createLicense() answers with a plan that is always on.
@@ -1039,6 +1068,45 @@ async function prepareChatTurn(messages, opts) {
   return { prompt, ticket: questionTicket };
 }
 
+// --- Settings file surgery, for the Settings > Data card. The renderer never
+// writes the file itself; these three verbs are narrow on purpose.
+const SETTINGS_FILE_EXPORTABLE = () => require('./settings-file').status().path;
+async function exportSettingsFile() {
+  const source = SETTINGS_FILE_EXPORTABLE();
+  if (!source || !require('fs').existsSync(source)) return { error: 'no_settings_file' };
+  const target = await dialog.showSaveDialog(win, { defaultPath: 'settings.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+  if (target.canceled || !target.filePath) return { canceled: true };
+  try {
+    // The raw bytes: if keychain encryption was on, the copy is encrypted too,
+    // which is the honest thing to hand someone without leaking plaintext keys.
+    require('fs').copyFileSync(source, target.filePath);
+    return { ok: true, path: target.filePath, encrypted: require('./settings-file').status().encrypted };
+  } catch (error) { return { error: 'copy_failed', detail: String(error.message || error) }; }
+}
+async function deleteAllData() {
+  const confirm = await dialog.showMessageBox(win, {
+    type: 'warning', buttons: ['Erase everything', 'Keep my data'], defaultId: 1, cancelId: 1,
+    title: 'Erase all local data',
+    message: 'This erases your courses, assignments, transcripts, settings and API keys from this machine.',
+    detail: 'It cannot be undone, and what the companion or cloud sync already sent elsewhere is not recalled. The settings file is deleted after a clean exit; everything else is wiped on quit.',
+  });
+  if (confirm.response !== 0) return { canceled: true };
+  wipingAll = true;
+  // Wipe on quit: the database is in memory right now, so the folders go
+  // with the process instead of under it.
+  require('./data-wipe').wipeEverything(app.getPath('userData'));
+  trackEvent('data_wiped', {});
+  // Relaunch into a blank slate; exiting keeps no half-wiped in-memory state.
+  app.relaunch();
+  app.exit(0);
+  return { ok: true };
+}
+function clearCompanionTranscripts() {
+  const result = api.deleteCompanionTranscripts();
+  trackEvent('companion_transcripts_cleared', result);
+  return result;
+}
+
 const handlers = {
   'state:get': () => appState(),
   'state:view': (_event, name) => { activeDesktopView = String(name || 'today').slice(0, 40); return true; },
@@ -1128,12 +1196,27 @@ const handlers = {
   },
   'preferences:set': (_event, key, value) => {
     if (!RENDERER_PREFERENCE_KEYS.has(key)) return { error: 'preference_not_allowed' };
+    const json = require('./settings-file').setPreference(key, value);
+    // SQLite mirrors for rollback; a failure there is reported, not hidden.
     const result = mutate(api.setPreference)(key, value);
-    // The desktop model picker: the AI module reads the choice at call time,
-    // so apply it the moment it changes (only when the save worked).
-    if (key === 'ai_model' && !(result && result.error)) ai.setModel(value);
-    return result;
+    if (key === 'launch_at_login') { try { if (process.platform !== 'linux') app.setLoginItemSettings({ openAtLogin: value === true }); } catch { /* not this OS */ } }
+    if (key === 'storage_cap_mb') { const mb = Number(value); if (Number.isFinite(mb) && mb > 0) api.setStorageCapBytes(Math.floor(mb * 1024 * 1024)); }
+    return result && result.error ? result : { ...result, ok: true, mirrored: true, jsonBacked: json };
   },
+  'settings:status': () => require('./settings-file').status(),
+  'settings:export': async () => exportSettingsFile(),
+  'settings:reset-preferences': () => {
+    // Keeps keys. Preferences revert to defaults because the file is the only
+    // place they live; the SQLite mirror goes too.
+    const settingsFile = require('./settings-file');
+    const current = settingsFile.getPreferences();
+    settingsFile.clearPreferences();
+    try { const prefs = api.getPreferences(); for (const key of Object.keys(prefs)) api.deletePreference(key); } catch { /* mirror best effort */ }
+    trackEvent('preferences_reset', { count: Object.keys(current).length });
+    return { ok: true, cleared: Object.keys(current).length };
+  },
+  'data:delete-all': async () => deleteAllData(),
+  'data:clear-companion-transcripts': () => clearCompanionTranscripts(),
   'bridge:status': () => ({ connected: fs.existsSync(bridgeFile), path: bridgeFile, updated_at: fs.existsSync(bridgeFile) ? fs.statSync(bridgeFile).mtime.toISOString() : null }),
   // Personal build: no accounts. These channels stay registered so an older
   // preload or dashboard cannot throw on invoke, but they do nothing.
@@ -1227,18 +1310,39 @@ const handlers = {
     return result;
   },
   'ai:status': async () => ({ ...await ai.status(), model: ai.activeModel() }),
-  'ai:set-key': (_event, value) => {
-    const result = ai.setApiKey(value);
-    if (result && result.ok) trackEvent('key_connected', { provider: 'anthropic' });
+  // Keys, one per provider. No argument keeps the historic behavior: saves the
+  // Anthropic key for Claude Code users. 'auto' resolves to the provider that
+  // would actually answer right now.
+  'ai:set-key': async (_event, value, providerArg) => {
+    const provider = providerArg === 'auto' || providerArg == null ? (providerArg === 'auto' ? await ai.resolveProvider() : null) : String(providerArg);
+    const result = ai.setApiKey(value, provider || undefined);
+    if (result && result.ok) trackEvent('key_connected', { provider: result.provider || provider || 'anthropic' });
     return result;
   },
-  'ai:clear-key': () => ai.clearApiKey(),
+  'ai:clear-key': async (_event, providerArg) => {
+    const provider = providerArg === 'auto' || providerArg == null ? (providerArg === 'auto' ? await ai.resolveProvider() : null) : String(providerArg);
+    return ai.clearApiKey(provider || undefined);
+  },
+  'ai:set-provider': (_event, provider) => ai.setDesktopProvider(provider),
+  'ai:set-model': async (_event, payload) => {
+    const provider = payload?.provider === 'auto' ? await ai.resolveProvider() : payload?.provider;
+    return ai.setDesktopModel(provider, payload?.model);
+  },
+  'ai:set-base-url': (_event, value) => ai.setDesktopBaseUrl(value),
   'ai:test': async () => ai.testConnection(),
-  // The model picker: Ask the key's own model list endpoint what it can reach.
-  'ai:list-models': async () => {
-    const key = secrets.getSecret(ai.KEY_NAME);
-    if (!key) return { ok: false, error: 'No Anthropic API key saved. Claude Code needs no key and runs on the model pinned in Settings.' };
-    return listModels('anthropic', { apiKey: key });
+  // The model picker: ask the provider's own model list endpoint what this key can reach.
+  'ai:list-models': async (_event, providerArg, baseUrlArg) => {
+    const provider = providerArg === 'auto' || !providerArg ? await ai.resolveProvider() : String(providerArg);
+    if (provider === 'claude-code') {
+      const key = secrets.getSecret(ai.KEY_NAME);
+      if (!key) return { ok: false, error: 'Claude Code needs no key; it runs on the pinned model. Save an Anthropic key to list models.' };
+      return listModels('anthropic', { apiKey: key });
+    }
+    if (provider === 'none') return { ok: false, error: 'No provider configured yet. Pick one above.' };
+    const key = provider === 'anthropic' ? secrets.getSecret(ai.KEY_NAME) : secrets.getSecret(`desktop_key_${provider}`);
+    const baseUrl = String(baseUrlArg == null ? (provider === 'custom' ? (require('./settings-file').getPreferences().desktop_base_url || '') : '') : baseUrlArg).trim();
+    if (provider === 'custom' && !baseUrl) return { ok: false, error: 'A custom endpoint needs a base URL first.' };
+    return listModels(provider, { apiKey: key || '', baseUrl });
   },
   'syllabus:import': async (_event, filePath) => {
     const result = await importSyllabus(typeof filePath === 'string' ? filePath : null);

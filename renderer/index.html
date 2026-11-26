@@ -248,56 +248,66 @@
 
       <section id="view-settings" class="view">
         <div class="settings-grid">
-          <section class="settings-nav panel-surface"><div class="settings-statue"><img src="assets/nus-statue-mark.png" alt="" /></div><h2 id="settings-name">Local</h2><p id="settings-email">This machine only</p><button class="settings-link active" type="button" data-card="license-card">This install</button><button class="settings-link" type="button" data-card="ai-card">AI</button><button class="settings-link" type="button" data-card="companion-ai-card">Companion AI</button><button class="settings-link" type="button" data-card="voice-card">Voice</button><button class="settings-link" type="button" data-card="storage-card">Data</button></section>
+          <section class="settings-nav panel-surface"><div class="settings-statue"><img src="assets/nus-statue-mark.png" alt="" /></div><h2 id="settings-name">Local</h2><p id="settings-email">This machine only</p>
+            <nav class="settings-nav-links" aria-label="Settings sections">
+              <button class="settings-link active" type="button" data-card="general-card">General</button>
+              <button class="settings-link" type="button" data-card="ai-card">J.A.R.V.I.S brain</button>
+              <button class="settings-link" type="button" data-card="companion-ai-card">Companion AI</button>
+              <button class="settings-link" type="button" data-card="voice-card">Voice</button>
+              <button class="settings-link" type="button" data-card="gpa-scale-card">Grading</button>
+              <button class="settings-link" type="button" data-card="storage-card">Data</button>
+              <button class="settings-link" type="button" data-card="license-card">This install</button>
+            </nav>
+          </section>
           <div class="settings-stack">
-            <section class="setting-card" id="theme-card">
+
+            <section class="setting-card" id="general-card">
               <div>
-                <div class="section-kicker">Appearance</div>
-                <h3>How he looks</h3>
+                <div class="section-kicker">General</div>
+                <h3>How J.A.R.V.I.S runs here</h3>
                 <p id="theme-copy">Gold on deep blue-black, the butler's own. Switching changes colour only: the same machine, the same hands, the same caution.</p>
                 <div class="theme-choices" role="radiogroup" aria-label="Theme">
                   <button class="theme-choice" id="theme-jarvis" data-theme-value="jarvis" role="radio" aria-checked="true" type="button">J.A.R.V.I.S<small>Gold</small></button>
                   <button class="theme-choice" id="theme-nus" data-theme-value="nus" role="radio" aria-checked="false" type="button">Nūs<small>Violet</small></button>
                 </div>
+                <div class="pref-rows">
+                  <label class="pref-row" for="pref-launch-login"><span class="pref-text"><strong>Start at sign-in</strong><small>J.A.R.V.I.S opens with your computer, quietly.</small></span><span class="switch"><input id="pref-launch-login" type="checkbox" /><span class="slider"></span></span></label>
+                  <label class="pref-row" for="pref-pause-automations"><span class="pref-text"><strong>Pause all automations</strong><small>Scheduled rules stop creating tasks. You can still edit and reactivate them anytime.</small></span><span class="switch"><input id="pref-pause-automations" type="checkbox" /><span class="slider"></span></span></label>
+                </div>
               </div>
               <span id="theme-badge" class="status-badge">J.A.R.V.I.S</span>
             </section>
-            <section class="setting-card" id="license-card">
-              <div>
-                <div class="section-kicker">This install</div>
-                <h3 id="license-title">Personal build</h3>
-                <p id="license-copy">Uncapped: imports, questions, connections, automations, Voice and the Companion. No account, no subscription, no telemetry.</p>
-                <div id="license-usage" class="license-usage" aria-live="polite"></div>
-                <div class="license-actions"><button id="license-refresh" class="quiet-button" type="button">Refresh</button></div>
-              </div>
-              <span id="license-badge" class="status-badge good">Local</span>
-            </section>
-            <section class="setting-card" id="bridge-card"><div><div class="section-kicker">Companion</div><h3 id="bridge-title">Checking shared context…</h3><p id="bridge-copy">The overlay reads a minimal semester snapshot, never the database file.</p></div><span id="bridge-badge" class="status-badge">Checking</span></section>
-            <section class="setting-card" id="sync-card" hidden>
-              <div>
-                <div class="section-kicker">Cloud sync</div>
-                <h3>Visible, opt-in, revocable</h3>
-                <p>Syncs the same bounded snapshot your Companion reads (next moves, courses, open tasks, automations). Not the full database. Off by default. Turn it on to keep your semester state across devices.</p>
-                <div class="sync-row"><label class="switch"><input id="sync-toggle" type="checkbox" /><span class="slider"></span></label><span id="sync-label">Cloud sync is off</span></div>
-                <div class="sheet-actions"><span id="sync-status"></span><button id="sync-delete" class="quiet-button">Delete my cloud data</button></div>
-              </div>
-              <span id="sync-badge" class="status-badge">Off</span>
-            </section>
+
             <section class="setting-card" id="ai-card">
               <div>
-                <div class="section-kicker">AI provider</div>
+                <div class="section-kicker">J.A.R.V.I.S brain</div>
                 <h3 id="ai-title">Checking for an AI provider…</h3>
-                <p id="ai-copy">J.A.R.V.I.S uses your own AI to read syllabi. Claude Code is detected automatically; otherwise paste an Anthropic API key. The key is encrypted on this device and never leaves it except to call Anthropic.</p>
-                <div id="ai-key-form" class="auth-form hidden">
-                  <label class="field"><span>Anthropic API key</span><input id="ai-key" type="password" placeholder="sk-ant-…" autocomplete="off" /></label>
-                  <div class="sheet-actions"><span id="ai-test-result"></span><div><button id="ai-key-save" class="primary-button">Save key</button><button id="ai-test" class="quiet-button">Test</button><button id="ai-key-clear" class="quiet-button hidden">Remove key</button></div></div>
-                </div>
+                <p id="ai-copy">J.A.R.V.I.S runs on the provider you pick here. Claude Code is used when installed, but it is never required: Gemini, Groq, OpenRouter, Nvidia, opencode, Ollama (fully local) or any OpenAI-compatible endpoint all work as the main brain. Keys are stored on this device and never leave it except to call the provider.</p>
                 <div class="auth-form">
-                  <label class="field"><span>Model</span>
-                    <div class="model-find-row"><input id="ai-model" type="text" list="ai-model-options" placeholder="claude-sonnet-5" autocomplete="off" spellcheck="false" /><button id="ai-models-refresh" class="quiet-button" type="button">Find models</button></div>
+                  <label class="field"><span>Provider</span><select id="desktop-provider">
+                    <option value="auto">Auto: Claude Code if installed, else the first key saved</option>
+                    <option value="claude-code">Claude Code (your subscription, no key)</option>
+                    <option value="anthropic">Anthropic API</option>
+                    <option value="gemini">Google Gemini (free tier)</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="groq">Groq (free tier)</option>
+                    <option value="openrouter">OpenRouter</option>
+                    <option value="nvidia">Nvidia</option>
+                    <option value="opencode">opencode go</option>
+                    <option value="ollama">Ollama (local, no key)</option>
+                    <option value="custom">Custom endpoint (OpenAI-compatible)</option>
+                  </select></label>
+                  <label class="field hidden" id="desktop-base-field"><span>Base URL</span><input id="desktop-base-url" type="text" placeholder="https://host/v1" autocomplete="off" spellcheck="false" /></label>
+                  <p id="desktop-keyless-note" class="field-hint hidden"></p>
+                  <div class="field" id="desktop-key-row">
+                    <label class="field"><span id="desktop-key-label">API key</span><input id="desktop-key" type="password" placeholder="sk-…" autocomplete="off" /></label>
+                    <div class="sheet-actions" style="margin-top:6px"><span id="ai-test-result"></span><div><button id="desktop-key-save" class="primary-button" type="button">Save key</button><button id="ai-test" class="quiet-button" type="button">Test</button><button id="ai-key-clear" class="quiet-button hidden" type="button">Remove key</button></div></div>
+                  </div>
+                  <label class="field"><span>Model <span class="field-note">empty = provider default</span></span>
+                    <div class="model-find-row"><input id="desktop-model" type="text" list="desktop-model-options" placeholder="provider default" autocomplete="off" spellcheck="false" /><button id="desktop-models-refresh" class="quiet-button" type="button">Find models</button></div>
                   </label>
-                  <datalist id="ai-model-options"></datalist>
-                  <p id="ai-models-hint" class="field-hint">Type an ID or pick one from the provider&rsquo;s own list. Applies to Claude Code too.</p>
+                  <datalist id="desktop-model-options"></datalist>
+                  <p id="desktop-models-hint" class="field-hint">Models come straight from the provider&rsquo;s /models endpoint. Applies to every J.A.R.V.I.S AI call, including Claude Code.</p>
                 </div>
               </div>
               <span id="ai-badge" class="status-badge">Checking</span>
@@ -305,8 +315,8 @@
             <section class="setting-card" id="companion-ai-card">
               <div>
                 <div class="section-kicker">Companion AI key</div>
-                <h3 id="companion-ai-title">Screen guidance can use desktop Claude</h3>
-                <p id="companion-ai-copy">Pick the provider the overlay talks to. Keys are encrypted on this device. Ollama needs no key, only a running server; a custom endpoint takes any OpenAI-compatible base URL.</p>
+                <h3 id="companion-ai-title">Screen guidance runs on the desktop brain until you set a key</h3>
+                <p id="companion-ai-copy">The provider the overlay and the Knot talk to for screen guidance and voice asks. Keys are encrypted on this device. Ollama needs no key, only a running server; a custom endpoint takes any OpenAI-compatible base URL.</p>
                 <div class="auth-form">
                   <label class="field"><span>Provider</span><select id="companion-ai-provider">
                     <option value="gemini">Gemini</option>
@@ -335,6 +345,7 @@
               </div>
               <span id="companion-ai-badge" class="status-badge">Checking</span>
             </section>
+            <section class="setting-card" id="bridge-card"><div><div class="section-kicker">Companion</div><h3 id="bridge-title">Checking shared context…</h3><p id="bridge-copy">The overlay reads a minimal semester snapshot, never the database file.</p></div><span id="bridge-badge" class="status-badge">Checking</span></section>
             <section class="setting-card" id="voice-card">
               <div style="width:100%">
                 <div class="section-kicker">Voice</div>
@@ -360,15 +371,59 @@
               </div>
             </section>
             <section class="setting-card" id="storage-card">
-              <div>
-                <div class="section-kicker">Storage</div>
+              <div style="width:100%">
+                <div class="section-kicker">Data</div>
                 <h3 id="storage-title">Measuring…</h3>
                 <p id="storage-copy">Everything J.A.R.V.I.S knows lives in one local database you can back up, export, or delete.</p>
                 <div class="projection-track" style="max-width:420px;margin-top:10px"><i id="storage-bar" style="width:0%"></i></div>
+                <div class="pref-rows">
+                  <label class="pref-row" for="storage-cap"><span class="pref-text"><strong>Storage cap</strong><small>How much disk imported source text may use before imports stop.</small></span><select id="storage-cap" class="quiet-button"><option value="256">256 MB</option><option value="512">512 MB</option><option value="1024">1 GB</option><option value="2048">2 GB</option></select></label>
+                  <label class="pref-row" for="transcript-retention"><span class="pref-text"><strong>Companion transcripts</strong><small>Auto-delete old Knot transcripts from this device on launch.</small></span><select id="transcript-retention" class="quiet-button"><option value="0">Keep forever</option><option value="30">Keep 30 days</option><option value="90">Keep 90 days</option><option value="365">Keep 1 year</option></select></label>
+                </div>
               </div>
               <span id="storage-badge" class="status-badge">Local</span>
             </section>
-            <section class="setting-card"><div><div class="section-kicker">Privacy</div><h3>Device-first knowledge</h3><p>Imports and saved history are stored on this computer. AI requests send relevant content to your configured provider. Screen guidance sends a screenshot when reading a step. Voice uses local transcription when available; a configured cloud speech provider may receive audio as fallback. Connected services and exports have their own data flows.</p></div><span class="status-badge good">On device</span></section>
+            <section class="setting-card" id="settings-file-card">
+              <div style="width:100%">
+                <div class="section-kicker">Settings file</div>
+                <h3>One file, every setting</h3>
+                <p>Theme, grading scale, providers, models, and your API keys, all live in <strong>settings.json</strong> in the app&rsquo;s data folder. Copy the file and your whole setup moves with it; updates never reset it. It is encrypted with your OS keychain when one is available.</p>
+                <div id="settings-file-path" class="settings-file-path">Reading…</div>
+                <p id="settings-file-status" class="field-hint"></p>
+                <div class="sheet-actions" style="justify-content:flex-start"><span id="settings-file-result"></span><div><button id="settings-export" class="quiet-button" type="button">Export a copy…</button><button id="settings-reset" class="quiet-button" type="button">Reset preferences (keep keys)</button></div></div>
+              </div>
+              <span id="settings-file-badge" class="status-badge good">One file</span>
+            </section>
+            <section class="setting-card danger-card" id="danger-card">
+              <div>
+                <div class="section-kicker">Danger zone</div>
+                <h3>Erase what lives here</h3>
+                <p>Clearing transcripts removes the Companion&rsquo;s saved Knot conversations from this device. Erasing everything wipes your courses, assignments, tasks, history, settings and keys, then relaunches into a blank install. Neither can be undone.</p>
+                <div class="sheet-actions" style="justify-content:flex-start"><span id="danger-result"></span><div><button id="data-clear-transcripts" class="quiet-button" type="button">Clear companion transcripts</button><button id="data-delete-all" class="danger-button" type="button">Erase all data…</button></div></div>
+              </div>
+              <span class="status-badge danger-badge">Permanent</span>
+            </section>
+            <section class="setting-card" id="license-card">
+              <div>
+                <div class="section-kicker">This install</div>
+                <h3 id="license-title">Personal build</h3>
+                <p id="license-copy">Uncapped: imports, questions, connections, automations, Voice and the Companion. No account, no subscription, no telemetry.</p>
+                <div id="license-usage" class="license-usage" aria-live="polite"></div>
+                <div class="license-actions"><button id="license-refresh" class="quiet-button" type="button">Refresh</button></div>
+              </div>
+              <span id="license-badge" class="status-badge good">Local</span>
+            </section>
+            <section class="setting-card" id="sync-card" hidden>
+              <div>
+                <div class="section-kicker">Cloud sync</div>
+                <h3>Visible, opt-in, revocable</h3>
+                <p>Syncs the same bounded snapshot your Companion reads (next moves, courses, open tasks, automations). Not the full database. Off by default. Turn it on to keep your semester state across devices.</p>
+                <div class="sync-row"><label class="switch"><input id="sync-toggle" type="checkbox" /><span class="slider"></span></label><span id="sync-label">Cloud sync is off</span></div>
+                <div class="sheet-actions"><span id="sync-status"></span><button id="sync-delete" class="quiet-button">Delete my cloud data</button></div>
+              </div>
+              <span id="sync-badge" class="status-badge">Off</span>
+            </section>
+            <section class="setting-card"><div><div class="section-kicker">Privacy</div><h3>Device-first knowledge</h3><p>Imports and saved history are stored on this computer. AI requests send relevant content to the provider you configured. Screen guidance sends a screenshot when reading a step. Voice uses local transcription when available. Your settings file stays on this device; connected services and exports have their own data flows.</p></div><span class="status-badge good">On device</span></section>
           </div>
         </div>
       </section>

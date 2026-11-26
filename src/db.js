@@ -531,9 +531,16 @@ const api = {
   addCompanionMessage: (sessionId, turn) => insertLazy(
     'INSERT INTO companion_messages (session_id, ts, channel, text, mode, used_screenshot) VALUES (?, ?, ?, ?, ?, ?)',
     [sessionId, new Date(turn.ts || Date.now()).toISOString(), turn.channel, turn.text, turn.mode ?? null, turn.used_screenshot ? 1 : 0]),
+  // Companion transcripts, gone wholesale. Used by Settings > Data.
+  deleteCompanionTranscripts: (olderThanIso) => (typeof olderThanIso === 'string' && olderThanIso)
+    ? { messages: run('DELETE FROM companion_messages WHERE ts < ?', [olderThanIso]).changes, sessions: 0 }
+    : { messages: run('DELETE FROM companion_messages').changes, sessions: run('DELETE FROM companion_sessions').changes },
+
   flushPersist: () => flushPersist(),
 
   setPreference: (key, value) => run('INSERT INTO preferences (key, value_json) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json', [key, JSON.stringify(value)]),
+  // Used by Settings > Reset preferences so the mirror really goes, not null-fills.
+  deletePreference: (key) => run('DELETE FROM preferences WHERE key = ?', [key]),
   getPreferences: () => Object.fromEntries(all('SELECT * FROM preferences').map((row) => {
     try { return [row.key, JSON.parse(row.value_json)]; } catch { return [row.key, row.value_json]; }
   })),

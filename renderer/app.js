@@ -524,7 +524,7 @@ async function importDefault(){const result=await api.importSource('calendar_fil
 $('#import-primary').addEventListener('click',importSyllabusFlow);
 $('#source-import').addEventListener('click',()=>setView('integrations'));
 
-const AI_ERRORS={no_ai:'Connect an AI provider first. Taking you to Settings.',empty_text:'No readable text in that file. Scanned PDFs need selectable text.',bad_json:'The AI reply was not readable. Try the import again.',read_failed:'Could not read that file.',storage_limit:'J.A.R.V.I.S local storage is full. Remove an import before adding another.',cli_timeout:'Claude Code took too long. Try again.',cli_failed:'Claude Code returned an error.',cli_spend_limit:'Your Claude subscription hit its spend limit. Add an Anthropic API key in Settings, or raise the limit in Claude Code.',cli_not_logged_in:'Claude Code is installed but signed out. Open a terminal, run "claude", then /login, or paste an Anthropic API key in Settings.',cli_spawn_failed:'Claude Code could not start.',api_failed:'The Anthropic API returned an error.',api_refused:'The AI declined this content.',api_timeout:'The API call timed out. Try again.',api_network:'Network problem reaching Anthropic.',unexpected_reply:'The provider answered, but not as expected.',source_missing:'That import is no longer on file.',course_name_required:'The course needs a name.',target_not_found:'I could not find that item. Try its exact name.',incomplete_command:'I need a bit more: which item, and what date?',unknown_intent:'That request did not survive the trip. Try again.'};
+const AI_ERRORS={cli_not_detected:'Claude Code was not found. Pick another provider in Settings, or install Claude Code.',no_ai:'Connect an AI provider first. Taking you to Settings.',empty_text:'No readable text in that file. Scanned PDFs need selectable text.',bad_json:'The AI reply was not readable. Try the import again.',read_failed:'Could not read that file.',storage_limit:'J.A.R.V.I.S local storage is full. Remove an import before adding another.',cli_timeout:'Claude Code took too long. Try again.',cli_failed:'Claude Code returned an error.',cli_spend_limit:'Your Claude subscription hit its spend limit. Add an Anthropic API key in Settings, or raise the limit in Claude Code.',cli_not_logged_in:'Claude Code is installed but signed out. Open a terminal, run "claude", then /login, or paste an Anthropic API key in Settings.',cli_spawn_failed:'Claude Code could not start.',api_failed:'The provider returned an error.',api_refused:'The AI declined this content.',api_timeout:'The API call timed out. Try again.',api_network:'Network problem reaching the provider.',unexpected_reply:'The provider answered, but not as expected.',source_missing:'That import is no longer on file.',course_name_required:'The course needs a name.',target_not_found:'I could not find that item. Try its exact name.',incomplete_command:'I need a bit more: which item, and what date?',unknown_intent:'That request did not survive the trip. Try again.'};
 Object.assign(AI_ERRORS, { voice_setup_required:'Complete voice setup in J.A.R.V.I.S before recording.', capture_finalizing:'J.A.R.V.I.S is saving the last words. Please wait a moment.', companion_busy:'Finish your guide or voice question before recording.' });
 function aiError(code,detail){const base=AI_ERRORS[code]||`Request failed (${code}).`;return detail?`${base} (${String(detail).slice(0,120)})`:base;}
 
@@ -616,58 +616,141 @@ $('#gpa-scale-card').addEventListener('click',async(event)=>{
 });
 $('#gpa-preset').addEventListener('change',(event)=>{const preset=GPA_PRESETS[event.target.value];if(!preset)return;state.gpaScale=preset.map(([min,letter,points])=>({min,letter,points}));renderGpaScale();event.target.value='';});
 
-async function renderAiState(){
-  const status=await api.aiStatus();
-  const badge=$('#ai-badge');
-  const form=$('#ai-key-form');
-  // The key form stays available even when the CLI is present: an installed but
-  // signed-out CLI would otherwise leave the user with no way to configure AI.
-  form.classList.remove('hidden');
-  $('#ai-key-clear').classList.toggle('hidden',!status.apiKey);
-  if(status.cli){
-    $('#ai-title').textContent=status.apiKey?'Claude Code detected (API key as backup)':'Claude Code detected';
-    $('#ai-copy').textContent='Syllabus reading runs through your Claude Code subscription. If Claude Code is signed out, run "claude" in a terminal and use /login, or paste an Anthropic API key below as a fallback.';
-    badge.textContent='Ready';badge.classList.add('good');
-  }else if(status.apiKey){
-    $('#ai-title').textContent='Anthropic API key saved';
-    $('#ai-copy').textContent='The key is encrypted on this device and used only when you import a syllabus.';
-    badge.textContent='Ready';badge.classList.add('good');
-  }else{
-    $('#ai-title').textContent='Connect an AI to read syllabi';
-    $('#ai-copy').textContent='Install Claude Code (detected automatically), or paste an Anthropic API key. Without one, imports still work for calendar .ics files.';
-    badge.textContent='Not set';badge.classList.remove('good');
-  }
-  const modelInput=$('#ai-model');
-  if(modelInput&&document.activeElement!==modelInput)modelInput.value=(state.data.preferences&&state.data.preferences.ai_model)||'';
-  refreshAnthropicModels(false);
+// The J.A.R.V.I.S brain: any configured provider can be the main one.
+const DESKTOP_PROVIDER_META = {
+  'claude-code': { label: 'Claude Code', placeholder: 'no key needed' },
+  anthropic: { label: 'Anthropic', placeholder: 'sk-ant-…' },
+  gemini: { label: 'Google Gemini', placeholder: 'AIza…' },
+  openai: { label: 'OpenAI', placeholder: 'sk-…' },
+  groq: { label: 'Groq', placeholder: 'gsk_…' },
+  openrouter: { label: 'OpenRouter', placeholder: 'sk-or-…' },
+  nvidia: { label: 'Nvidia', placeholder: 'nvapi-…' },
+  opencode: { label: 'opencode go', placeholder: 'your opencode key' },
+  ollama: { label: 'Ollama (local)', placeholder: 'no key needed' },
+  custom: { label: 'Custom endpoint', placeholder: 'optional key' },
+};
+function desktopEffectiveProvider(status){
+  const choice = (status && status.providerChoice) || 'auto';
+  const resolved = (status && status.provider) || 'none';
+  return { choice, provider: choice === 'auto' ? resolved : choice };
 }
-$('#ai-key-save').addEventListener('click',async()=>{
-  const value=$('#ai-key').value;
-  $('#ai-key').value='';
-  if(!value.trim())return showToast('Paste a key first.');
-  const result=await api.aiSetKey(value);
-  if(result.error)return showToast('That key looks empty.');
-  $('#ai-test-result').textContent='Key saved.';
-  refreshAnthropicModels(true);
+async function renderAiState(){
+  const status = await api.aiStatus().catch(() => null);
+  const badge = $('#ai-badge');
+  const select = $('#desktop-provider');
+  const { choice, provider } = desktopEffectiveProvider(status);
+  if (select && !select.dataset.userPicked) select.value = choice;
+  const labels = (status && status.labels) || {};
+  const needsKey = (status && status.needsKey) || {};
+  const keys = (status && status.keys) || {};
+  const meta = DESKTOP_PROVIDER_META[provider] || { label: labels[provider] || 'No provider', placeholder: 'sk-…' };
+  const configured = Boolean(status && status.configured);
+  const none = provider === 'none';
+  const keyless = !none && !needsKey[provider];
+  const label = labels[provider] || meta.label;
+  // Badge + headline: honest about what will answer right now.
+  badge.textContent = configured ? 'Ready' : 'Not set';
+  badge.classList.toggle('good', configured);
+  if (none) {
+    $('#ai-title').textContent = 'Pick a provider to power J.A.R.V.I.S';
+    $('#ai-copy').textContent = 'No provider is configured yet. Claude Code is picked automatically when installed; otherwise choose one above (Gemini and Groq have free tiers) and paste its key. Without one, imports still work for calendar .ics files.';
+  } else if (choice === 'auto') {
+    $('#ai-title').textContent = `Auto → ${label}`;
+    $('#ai-copy').textContent = `Auto uses Claude Code when it is installed, otherwise the first provider with a key saved. Right now that is ${label}. Pick a provider above to pin one. Keys are stored on this device in settings.json.`;
+  } else if (keyless) {
+    $('#ai-title').textContent = `${label}: no key needed`;
+    $('#ai-copy').textContent = provider === 'ollama'
+      ? 'Ollama runs on this machine; J.A.R.V.I.S talks to its local server. Start Ollama and pull a model (for example llama3.2), then test below.'
+      : 'The custom endpoint is used as-is. If it needs a key, paste one below; if it is an open proxy, leave it empty.';
+  } else {
+    $('#ai-title').textContent = keys[provider] ? `${label}: key saved` : `${label} needs a key`;
+    $('#ai-copy').textContent = `J.A.R.V.I.S will use ${label} for syllabus reading, ask-anything and scheduled asks. Keys are stored on this device in settings.json and never leave it except to call the provider.`;
+  }
+  // Key row: only for key-bearing providers that exist; saves against the selected provider.
+  const keyRow = $('#desktop-key-row');
+  if (keyRow) keyRow.classList.toggle('hidden', none || keyless);
+  const note = $('#desktop-keyless-note');
+  if (note) {
+    if (none && choice === 'auto') { note.textContent = 'Pick a provider above, paste its key, then leave Auto on; Auto will find it from then on.'; note.classList.remove('hidden'); }
+    else if (keyless) { note.textContent = provider === 'ollama' ? 'Ollama needs a running server, not a key.' : provider === 'claude-code' ? 'Claude Code runs on your subscription. Nothing to paste here.' : 'This endpoint works without a key. Paste one only if your proxy requires it.'; note.classList.remove('hidden'); }
+    else note.classList.add('hidden');
+  }
+  const keyLabel = $('#desktop-key-label'); if (keyLabel) keyLabel.textContent = `${label} API key`;
+  const keyInput = $('#desktop-key'); if (keyInput && document.activeElement !== keyInput) keyInput.placeholder = meta.placeholder;
+  $('#ai-key-clear')?.classList.toggle('hidden', none || keyless || !keys[provider]);
+  // Base URL row: custom only.
+  const baseField = $('#desktop-base-field'); if (baseField) baseField.classList.toggle('hidden', provider !== 'custom');
+  const baseInput = $('#desktop-base-url'); if (baseInput && status?.baseUrl && !baseInput.value) baseInput.value = status.baseUrl;
+  // Model field: per provider, empty means the provider default.
+  const modelInput = $('#desktop-model');
+  if (modelInput && document.activeElement !== modelInput) {
+    modelInput.value = (status?.desktopModels && status.desktopModels[provider]) || '';
+    modelInput.placeholder = (status && status.defaultModel) || 'provider default';
+  }
+  refreshDesktopModels(false);
+}
+// Which provider does a settings action apply to right now?
+function desktopTargetProvider(status){
+  const { choice, provider } = desktopEffectiveProvider(status);
+  // Under Auto with nothing resolved there is no sensible target; callers
+  // guard on none themselves.
+  return choice === 'auto' ? (provider === 'none' ? 'anthropic' : provider) : choice;
+}
+$('#desktop-provider')?.addEventListener('change',async(e)=>{
+  const select = e.target; select.dataset.userPicked = '1';
+  const result = await api.aiSetProvider?.(select.value);
+  if (result && result.error) { showToast('That provider choice was not saved.'); return; }
+  $('#ai-test-result').textContent = '';
   await renderAiState();
-  if(state.pendingSourceId){
-    const retry=await api.syllabusExtract(state.pendingSourceId);
-    state.pendingSourceId=null;
-    if(!retry.error)openReview(retry.data,retry.fileName,retry.sourceId);
+});
+$('#desktop-key-save')?.addEventListener('click',async()=>{
+  const value = $('#desktop-key').value;
+  $('#desktop-key').value = '';
+  if (!value.trim()) return showToast('Paste a key first.');
+  const status = await api.aiStatus().catch(() => null);
+  const target = desktopTargetProvider(status);
+  const result = await api.aiSetKey(value, target);
+  if (result?.error) return showToast('That key looks empty.');
+  $('#ai-test-result').textContent = 'Key saved.';
+  refreshDesktopModels(true);
+  await renderAiState();
+  if (state.pendingSourceId) {
+    const retry = await api.syllabusExtract(state.pendingSourceId);
+    state.pendingSourceId = null;
+    if (!retry.error) openReview(retry.data, retry.fileName, retry.sourceId);
   }
 });
 $('#ai-test').addEventListener('click',async()=>{
-  const button=$('#ai-test');
-  button.disabled=true;$('#ai-test-result').textContent='Testing…';
-  const result=await api.aiTest();
-  button.disabled=false;
-  $('#ai-test-result').textContent=result.ok?'Provider answered. You are set.':aiError(result.error,result.detail);
+  const button = $('#ai-test');
+  button.disabled = true; $('#ai-test-result').textContent = 'Testing…';
+  const result = await api.aiTest();
+  button.disabled = false;
+  $('#ai-test-result').textContent = result.ok ? 'Provider answered. You are set.' : aiError(result.error, result.detail);
 });
 $('#ai-key-clear').addEventListener('click',async()=>{
-  await api.aiClearKey();
-  $('#ai-test-result').textContent='Key removed.';
-  refreshAnthropicModels(true);
+  const status = await api.aiStatus().catch(() => null);
+  const target = desktopTargetProvider(status);
+  await api.aiClearKey(target);
+  $('#ai-test-result').textContent = 'Key removed.';
+  refreshDesktopModels(true);
   renderAiState();
+});
+$('#desktop-base-url')?.addEventListener('change',async(e)=>{
+  const value = e.target.value.trim();
+  const result = await api.aiSetBaseUrl?.(value);
+  if (result?.error) { $('#desktop-models-hint').textContent = 'A base URL starts with http:// or https://.'; $('#desktop-models-hint').classList.add('error'); return; }
+  $('#desktop-models-hint').textContent = value ? 'Base URL saved.' : 'Base URL cleared; the custom endpoint is not selectable until one is set.';
+  $('#desktop-models-hint').classList.remove('error');
+  refreshDesktopModels(true);
+});
+$('#desktop-model')?.addEventListener('change',async(e)=>{
+  const value = e.target.value.trim();
+  const status = await api.aiStatus().catch(() => null);
+  const target = desktopTargetProvider(status);
+  const result = await api.aiSetDesktopModel?.({ provider: target, model: value });
+  const hint = $('#desktop-models-hint');
+  if (result?.error) { if (hint) { hint.textContent = result.error === 'bad_model_id' ? 'That does not look like a model ID.' : 'That model was not saved.'; hint.classList.add('error'); } return; }
+  if (hint) { hint.textContent = value ? `Model set to ${value}.` : 'Model cleared back to the provider default.'; hint.classList.remove('error'); }
 });
 
 function renderAutomations() {
@@ -981,6 +1064,8 @@ async function renderSettings(){
   renderVoiceState();
   renderGpaScale();
   renderStorage();
+  renderGeneralControls();
+  renderSettingsFile();
 }
 
 
@@ -1002,13 +1087,18 @@ function modelHint(el,result,noun){
   if(result&&result.ok){el.textContent=`${result.models.length} ${noun} found on the provider's /models list. Type one, or pick from it.`;el.classList.remove('error');return;}
   el.textContent=(result&&result.error)||'Could not reach the provider. The saved values stay.';el.classList.add('error');
 }
-async function refreshAnthropicModels(force){
-  const datalist=$('#ai-model-options');const hint=$('#ai-models-hint');
-  const scope='anthropic';
+async function refreshDesktopModels(force){
+  const datalist=$('#desktop-model-options');const hint=$('#desktop-models-hint');
+  if(!datalist)return;
+  const status=await api.aiStatus().catch(()=>null);
+  const { choice, provider } = desktopEffectiveProvider(status);
+  const baseUrl=($('#desktop-base-url')?.value||'').trim();
+  const scope='desktop:'+provider+'|'+(provider==='custom'?baseUrl:'');
   if(force)modelFetchCache.delete(scope);
-  const result=await cachedFetch(scope,()=>api.aiListModels?.() ?? Promise.resolve({ok:false,error:'This build cannot list models.'})).catch((e)=>({ok:false,error:String(e&&e.message||e)}));
+  const target=choice==='auto'?'auto':choice;
+  const result=await cachedFetch(scope,()=>api.aiListModels?.(target,baseUrl) ?? Promise.resolve({ok:false,error:'This build cannot list models.'})).catch((e)=>({ok:false,error:String(e&&e.message||e)}));
   if(result&&result.ok)fillModelDatalist(datalist,result.models);
-  modelHint(hint,result,'Claude models');
+  modelHint(hint,result,target==='claude-code'||target==='anthropic'?'Claude models':'models');
 }
 function companionModelScope(){
   const provider=$('#companion-ai-provider')?.value||'gemini';
@@ -1026,13 +1116,7 @@ async function refreshCompanionModels(force){
   modelHint(hint,result,'models');
 }
 function wireModelInputs(){
-  $('#ai-models-refresh')?.addEventListener('click',()=>refreshAnthropicModels(true));
-  $('#ai-model')?.addEventListener('change',async(e)=>{
-    const value=e.target.value.trim();
-    state.data.preferences=state.data.preferences||{};state.data.preferences.ai_model=value;
-    await api.setPreference?.('ai_model',value);
-    const hint=$('#ai-models-hint');if(hint){hint.textContent=value?`Model set to ${value}.`:'Model cleared back to the default (claude-sonnet-5).';hint.classList.remove('error');}
-  });
+  $('#desktop-models-refresh')?.addEventListener('click',()=>refreshDesktopModels(true));
   $('#companion-ai-models-refresh')?.addEventListener('click',()=>refreshCompanionModels(true));
   for(const [id,tier] of [['#companion-ai-model-fast','fast'],['#companion-ai-model-smart','smart']]){
     $(id)?.addEventListener('change',async(e)=>{
@@ -1079,7 +1163,7 @@ async function renderCompanionAiState(){
   badge.classList.toggle('good',has);
   $('#companion-ai-title').textContent=has
     ? `Companion answers through ${(COMPANION_PROVIDER_LABELS[provider]||['this provider'])[0]}`
-    : 'Screen guidance can use desktop Claude';
+    : 'The overlay picks up the desktop brain until you set a Companion provider';
   const tiers=(status&&status.models)||{fast:'',smart:''};
   const fastInput=$('#companion-ai-model-fast'),smartInput=$('#companion-ai-model-smart');
   if(fastInput&&document.activeElement!==fastInput)fastInput.value=tiers.fast||'';
@@ -1147,6 +1231,84 @@ async function renderStorage(){
   if(pct>80){badge.textContent='Nearly full';badge.classList.remove('good');}
   else{badge.textContent=formatBytes(used);badge.classList.add('good');}
 }
+
+function renderGeneralControls(){
+  const prefs = (state.data && state.data.preferences) || {};
+  const login = $('#pref-launch-login'); if (login) login.checked = prefs.launch_at_login === true;
+  const pause = $('#pref-pause-automations'); if (pause) pause.checked = prefs.automations_paused === true;
+  const cap = $('#storage-cap');
+  if (cap) { const mb = Number(prefs.storage_cap_mb); cap.value = [256,512,1024,2048].includes(mb) ? String(mb) : '512'; }
+  const retention = $('#transcript-retention');
+  if (retention) { const days = Number(prefs.companion_transcript_retention_days); retention.value = [0,30,90,365].includes(days) ? String(days) : '0'; }
+}
+$('#pref-launch-login')?.addEventListener('change',async(e)=>{
+  const result = await api.setPreference('launch_at_login', e.target.checked);
+  if (result?.error) { e.target.checked = !e.target.checked; showToast('That switch was not saved.'); return; }
+  showToast(e.target.checked ? 'J.A.R.V.I.S will start at sign-in.' : 'J.A.R.V.I.S will not start at sign-in.');
+});
+$('#pref-pause-automations')?.addEventListener('change',async(e)=>{
+  const result = await api.setPreference('automations_paused', e.target.checked);
+  if (result?.error) { e.target.checked = !e.target.checked; showToast('That switch was not saved.'); return; }
+  showToast(e.target.checked ? 'All automations paused.' : 'Automations running again.');
+});
+$('#storage-cap')?.addEventListener('change',async(e)=>{
+  const mb = Number(e.target.value);
+  const result = await api.setPreference('storage_cap_mb', mb);
+  if (result?.error) { showToast('That cap was not saved.'); return; }
+  showToast(`Storage cap set to ${mb >= 1024 ? (mb/1024) + ' GB' : mb + ' MB'}. New imports will stop past it.`);
+});
+$('#transcript-retention')?.addEventListener('change',async(e)=>{
+  const days = Number(e.target.value);
+  const result = await api.setPreference('companion_transcript_retention_days', days);
+  if (result?.error) { showToast('That choice was not saved.'); return; }
+  showToast(days === 0 ? 'Transcripts are kept forever.' : `Transcripts older than ${days} days will be deleted on launch.`);
+});
+
+async function renderSettingsFile(){
+  const pathEl = $('#settings-file-path'); if (!pathEl) return;
+  const status = await api.settingsStatus?.().catch(() => null);
+  if (!status) { pathEl.textContent = 'The settings file status is not available in this build.'; return; }
+  pathEl.textContent = status.path || '(defaults)';
+  const badge = $('#settings-file-badge');
+  if (badge) { badge.textContent = status.encrypted ? 'Keychain-encrypted' : 'Plain JSON · mode 0600'; badge.classList.toggle('good', true); }
+  const statusEl = $('#settings-file-status');
+  if (statusEl) {
+    const messages = {
+      new: 'Created on first launch. Everything you change lands here; one copy is all a backup needs.',
+      ok: `Loaded. ${status.preferences} preferences and ${status.secrets} API keys live in this file.`,
+      migrated: `Migrated from the old stores. ${status.preferences} preferences and ${status.secrets} API keys moved into one file; the old copies were left untouched.`,
+      unreadable: `Could not be read (${status.error || 'unknown error'}). A copy was kept next to it; the app is running on defaults until you restore it.`,
+    };
+    statusEl.textContent = messages[status.read] || messages.ok;
+    statusEl.classList.toggle('error', status.read === 'unreadable');
+  }
+}
+$('#settings-export')?.addEventListener('click',async()=>{
+  const result = await api.settingsExport?.().catch(() => null);
+  const el = $('#settings-file-result');
+  if (!el) return;
+  if (result?.ok) el.textContent = `Exported to ${result.path}${result.encrypted ? ' (keychain-encrypted copy)' : ''}.`;
+  else if (result?.canceled) el.textContent = '';
+  else el.textContent = 'Export failed.';
+});
+$('#settings-reset')?.addEventListener('click',async()=>{
+  if (!window.confirm('Reset every preference to its default? API keys are kept. This cannot be undone.')) return;
+  const result = await api.settingsResetPreferences?.().catch(() => null);
+  const el = $('#settings-file-result');
+  if (el) el.textContent = result?.ok ? `Preferences reset (${result.cleared ?? 0} cleared). Keys are kept.` : 'Reset failed.';
+  await load();
+});
+$('#data-clear-transcripts')?.addEventListener('click',async()=>{
+  if (!window.confirm('Delete every saved Companion transcript from this device? This cannot be undone.')) return;
+  const result = await api.dataClearCompanionTranscripts?.().catch(() => null);
+  const el = $('#danger-result');
+  if (el) el.textContent = result ? `Removed ${result.messages ?? 0} messages and ${result.sessions ?? 0} sessions.` : 'Could not clear transcripts.';
+});
+$('#data-delete-all')?.addEventListener('click',async()=>{
+  const result = await api.dataDeleteAll?.().catch(() => null);
+  const el = $('#danger-result');
+  if (el && result && !result.ok) el.textContent = result.canceled ? '' : 'Erase failed.';
+});
 
 // Personal build: no account, so this only names the local profile in the rail.
 async function renderAuthState() {
@@ -1475,8 +1637,8 @@ const APP_GUIDE=[
   {match:/close|quit|exit|background|still running|stays open/,go:'companion',label:'Open Knot settings',answer:'Closing the dashboard leaves the Companion running on your desktop with every hotkey live, the same way it works after a restart. The tray icon reopens the dashboard or quits J.A.R.V.I.S entirely, and Turn off Companion on this pane removes the overlay for good.'},
   {match:/stealth|invisible|hide.*(companion|overlay|knot)/,go:'companion',label:'Open Knot settings',answer:`${MOD}+Shift+Space hides the whole Companion, ${MOD}+Shift+X stops listening and vanishes. The Knot mark alone can be hidden or shown from this pane, and this pane is always the way back.`},
   {match:/history|transcript|recording|session/,go:'history',label:'Open History',answer:'Every Companion capture session lands under Knot > History: full transcript, search, and upload into your Jarvis vault with a preview before anything is written.'},
-  {match:/gemini|companion.*(key|api)|key.*companion|overlay.*key/,go:'settings',label:'Open Settings',answer:'Screen guidance can use desktop Claude when no Companion key is set. The Companion AI key card in Settings adds Gemini for Companion answers and cloud speech fallback. For keyless voice, click Talk on the Knot and complete local voice setup.'},
-  {match:/api key|anthropic|claude key|which model/,go:'settings',label:'Open Settings',answer:'Two keys, two jobs. Desktop app: Claude, found automatically if Claude Code is installed, otherwise an Anthropic API key in Settings > AI provider. It runs on Sonnet so syllabus reading stays affordable. Companion overlay: its own Gemini key in the Companion AI key card just below.'},
+  {match:/gemini|companion.*(key|api)|key.*companion|overlay.*key/,go:'settings',label:'Open Settings',answer:'Screen guidance uses the Companion provider when one is set, otherwise the desktop brain. The Companion AI card in Settings adds Gemini and friends for Companion answers and cloud speech fallback. For keyless voice, click Talk on the Knot and complete local voice setup.'},
+  {match:/api key|anthropic|claude key|which model/,go:'settings',label:'Open Settings',answer:'Two slots, two jobs. Desktop brain: any provider in the J.A.R.V.I.S brain card in Settings. Claude Code if it is installed, or Gemini, Groq, OpenRouter, Nvidia, Ollama or a custom endpoint with its key; the free tiers work fine. It pins the model you pick in that card. Companion overlay: its own provider in the Companion AI card just below. Claude is never required.'},
   {match:/gmail/,go:'email',label:'Open Email',answer:'Gmail needs no connection: draft the email in the Email tab, then press Open in Gmail. The finished draft opens in a Gmail compose window in your browser with everything filled in, and you press send there.'},
   {match:/email|professor|outlook/,go:'email',label:'Open Email',answer:'Email has its own tab in the rail. Connect Outlook read-only for the inbox brief and your writing style; the professor drafter works even without connecting, and any draft can open straight into Gmail with the Open in Gmail button.'},
   {match:/dashboard|home page|main page|back to today/,go:'today',label:'Open Today',answer:'The dashboard is the Today tab, item 01 in the rail. If the app window is closed, the tray icon has Open J.A.R.V.I.S dashboard.'},
@@ -2311,7 +2473,7 @@ const tourSteps=[
   {view:'companion',rail:'companion',title:'The Knot rides on top of everything',body:`The J.A.R.V.I.S Knot floats over your screen, answers "What should I do?" from your real semester, and listens when you ask it to. ${MOD}+Shift+Space hides it, ${MOD}+Shift+X stops and vanishes in one stroke.`,action:{label:'Show me the Knot',run:async()=>{await api.companionControl?.('tour');}}},
   {view:'history',rail:'companion',title:'Every session is kept',body:'Transcripts from the Companion land here, searchable, with the briefing pack that was live at the time. Any session can be uploaded into your Jarvis vault as a note, and you see the exact markdown before it is written.'},
   {view:'settings',rail:'settings',title:'Settings is where the wiring lives',body:'Your two AI keys, email and calendar connections, Companion options, and your school\'s GPA scale all live here. The next three steps cover the ones you actually have to do.'},
-  {view:'settings',rail:'settings',title:'Key 1 of 2: Claude, for the desktop app',body:'The AI provider card on this page. Claude reads your syllabi and powers the Ask bar and the chat thread. If Claude Code is installed on this machine, J.A.R.V.I.S finds it automatically and there is nothing to paste. If not, put an Anthropic API key in that card. It is encrypted on this device and only ever used to call Anthropic.'},
+  {view:'settings',rail:'settings',title:'Key 1 of 2: the AI behind the desktop app',body:'The J.A.R.V.I.S brain card on this page. Any provider works for syllabus reading, the Ask bar and chat: Claude Code if it is installed, otherwise Gemini, Groq, OpenRouter, Nvidia, Ollama or a custom endpoint. Paste that provider key in the card and pick its model from the provider own list. Keys are stored in settings.json on this device and never leave it except to call the provider.'},
   {view:'settings',rail:'settings',title:'Key 2 of 2: Gemini, for the Companion',body:'The Companion AI key card, right below the AI provider one. The floating Knot is a separate agent: it sees your screen and listens, so it runs on its own provider to stay fast and cheap. Paste a Google Gemini key there (the free tier at aistudio.google.com/apikey is enough) and the Knot starts answering with AI. Even without it, "What should I do?" answers from your semester on this machine. The Knot\'s own gear icon sets the same key if you prefer.'},
   {view:'settings',rail:'settings',title:'Fix your GPA scale',body:'Scroll to the GPA scale card, or click Data in the left column. Every school maps percentages to letters differently, so match that table to your syllabus or the registrar once. Semester setup and every GPA projection read from it, and J.A.R.V.I.S never guesses a missing row.'},
   {view:'companion',rail:'companion',title:'Driving the Companion',action:{label:'Show me the Knot',run:()=>{api.companionControl?.('tour');}},body:`On screen: click the Knot, then press "What should I do?" or type anything. ${MOD}+Enter asks from anywhere, even with no key set. ${MOD}+Shift+Space hides or shows it, ${MOD}+Shift+X stops listening and vanishes. It keeps running with the hotkeys live after you close this dashboard, and the ${IS_MAC?'menu bar':'tray'} icon brings the dashboard back. Turn off Companion on this pane removes it entirely.`},
@@ -2572,11 +2734,18 @@ start().catch((error)=>{console.error(error);showToast('J.A.R.V.I.S could not re
 
 function createPreviewApi(){
   const today=isoDay(),plus=(days)=>{const d=new Date();d.setDate(d.getDate()+days);return isoDay(d);};
-  const data={courses:[{id:1,name:'Linear Algebra',code:'MATH 2418',credit_hours:4},{id:2,name:'Computer Science II',code:'COSC 1437',credit_hours:4}],assignments:[{id:1,course_id:1,title:'Matrix transformations set',due_date:plus(1),status:'pending'},{id:2,course_id:2,title:'Linked list lab',due_date:plus(3),status:'pending'}],tasks:[{id:1,title:'Study for linear algebra midterm',course_name:'Linear Algebra',due_date:plus(5),done:0,estimated_minutes:100,steps:[{id:1,title:'Collect the exact topics and materials',done:1,estimated_minutes:20},{id:2,title:'Run a quick diagnostic without notes',done:0,estimated_minutes:20},{id:3,title:'Review the weakest two topics',done:0,estimated_minutes:20},{id:4,title:'Complete a timed practice pass',done:0,estimated_minutes:20},{id:5,title:'Write the one-page final review sheet',done:0,estimated_minutes:20}]}],sources:[{id:1,title:'Fall 2026 calendar.ics',source_type:'calendar_file'}],integrations:[['calendar_file','Calendar file','connected','12 events imported locally.'],['google_calendar','Google Calendar','needs_credentials','OAuth client ID required before live sync can be enabled.'],['canvas','Canvas','needs_credentials','Requires your school Canvas domain and an approved OAuth client.'],['blackboard','Blackboard','needs_admin','Requires an Anthology app registration and campus approval.'],['chatgpt_export','ChatGPT history','ready','Import an exported JSON or HTML archive locally.'],['claude_export','Claude history','ready','Import exported JSON, HTML, Markdown, or text locally.'],['google_docs','Google Docs','ready','Import downloaded Docs as PDF, DOCX, Markdown, or text.'],['icloud_notes','iCloud Notes','ready','Import exported notes as HTML, Markdown, or text.']].map(([provider,label,status,detail])=>({provider,label,status,detail})),automations:[{id:1,name:'Weekly calculus review',trigger_type:'weekly',enabled:1,run_count:2}],repeated_signals:[{recurrence_key:'weekly review',occurrences:3,example_title:'Weekly chapter review'}],preferences:{onboarded:true},activity:[{id:2,action_type:'assistant_reschedule',summary:'Assignment 3 due date updated',detail:'Changed in memory and Calendar using your Linear Algebra syllabus context.',status:'done',created_at:new Date(Date.now()-1800000).toISOString()},{id:1,action_type:'assistant_draft',summary:'Professor absence email drafted',detail:'Used "Dr. Ibarra," your section number, and your usual professional tone.',status:'review',created_at:new Date(Date.now()-3600000).toISOString()}],ranked:[{id:1,title:'Matrix transformations set',due_date:plus(1),course_name:'Linear Algebra',days_left:1,reason:'Due tomorrow in Linear Algebra.'},{id:2,title:'Linked list lab',due_date:plus(3),course_name:'Computer Science II',days_left:3,reason:'Due in 3 days.'}],gpa:{overall:3.54,courses:[{course:'Linear Algebra',letter:'A-',known_weight:30,assumed_weight:70},{course:'Computer Science II',letter:'B+',known_weight:45,assumed_weight:55}]}};
-  return {getState:async()=>data,updateTask:async()=>{},updateTaskStep:async()=>{},updateAssignment:async(id)=>{data.assignments=data.assignments.filter((a)=>a.id!==id);data.ranked=data.ranked.filter((r)=>r.id!==id);},addTask:async(task)=>{task.id=Date.now();task.course_name='General';task.done=0;task.steps=[1,2,3,4,5].map((id,index)=>({id:Date.now()+id,title:['Define what done looks like','Prepare the materials','Complete the first pass','Resolve the main blocker','Review and close'][index],done:0,estimated_minutes:12}));data.tasks.unshift(task);},setPreference:async(key,value)=>{data.preferences[key]=value;},importSource:async()=>({canceled:false,imported:4,fileName:'semester.ics'}),aiStatus:async()=>({cli:true,apiKey:false,encryptionAvailable:true}),aiSetKey:async()=>({ok:true}),aiClearKey:async()=>({ok:true}),aiTest:async()=>({ok:true}),syllabusImport:async()=>({sourceId:1,fileName:'COSC 1437 Syllabus.pdf',data:{course:{name:'Computer Science II',code:'COSC 1437',credit_hours:4,term:'Fall 2026'},grade_weights:[{category:'Homework',weight_pct:20},{category:'Labs',weight_pct:20},{category:'Midterm',weight_pct:25},{category:'Final',weight_pct:35}],assignments:[{title:'Linked list lab',due_date:plus(6),category:'Labs'},{title:'Homework 1: recursion',due_date:plus(9),category:'Homework'},{title:'Midterm exam',due_date:plus(30),category:'Midterm'}]}}),syllabusExtract:async()=>({error:'source_missing'}),syllabusConfirm:async()=>({ok:true,courseId:3,assignments:3,weights:4}),authConfig:async()=>({supabase:false,googleCalendar:false,outlook:true}),outlookStatus:async()=>({configured:true,connected:true,email:'you@utdallas.edu'}),outlookInbox:async()=>({messages:[{subject:'Assignment 3 deadline moved to Friday',from_name:'Dr. Lina Ibarra',from_address:'ibarra@utdallas.edu',received_at:new Date(Date.now()-3600000).toISOString(),preview:'Canvas will update tonight. The new deadline is Friday at 11:59pm.',unread:true,important:false},{subject:'Fall internship fair registration opens',from_name:'UTD Career Center',from_address:'careers@utdallas.edu',received_at:new Date(Date.now()-7200000).toISOString(),preview:'Registration opens this week for the fall fair.',unread:false,important:false}]}),styleProfile:async()=>({ready:true,exemplars:38,formality:'balanced',avgSentenceWords:16}),listActivity:async()=>data.activity,assistantParse:async(text)=>{const isQ=/\?|what|how|when|should/i.test(text);return isQ?{proposal:{command:{intent:'question',question:text,summary_for_user:''},resolved:{},notes:[],needs_confirm:false}}:{proposal:{command:{intent:'add_task',title:text.slice(0,60),due_date:plus(1),summary_for_user:`Create task "${text.slice(0,40)}" due tomorrow.`,confidence:0.9},resolved:{},notes:[],needs_confirm:true}};},assistantExecute:async()=>({ok:true,message:'Done (preview).'}),authSession:async()=>({user:null,configured:false}),syncStatus:async()=>({configured:false,authenticated:false,enabled:false}),addAutomation:async(item)=>{data.automations.unshift({...item,id:Date.now(),enabled:1,run_count:0});},updateAutomation:async()=>{},bridgeStatus:async()=>({connected:true,updated_at:new Date().toISOString()}),storageStatus:async()=>({dbBytes:4823040,sourceBytes:2411520,capBytes:536870912}),saveState:async()=>({ok:true,kind:null,message:null,failedSince:null}),onSaveState:()=>{},sourceText:async()=>'Professor: Dr. Lina Ibarra, ibarra@utdallas.edu',
+  const data={courses:[{id:1,name:'Linear Algebra',code:'MATH 2418',credit_hours:4},{id:2,name:'Computer Science II',code:'COSC 1437',credit_hours:4}],assignments:[{id:1,course_id:1,title:'Matrix transformations set',due_date:plus(1),status:'pending'},{id:2,course_id:2,title:'Linked list lab',due_date:plus(3),status:'pending'}],tasks:[{id:1,title:'Study for linear algebra midterm',course_name:'Linear Algebra',due_date:plus(5),done:0,estimated_minutes:100,steps:[{id:1,title:'Collect the exact topics and materials',done:1,estimated_minutes:20},{id:2,title:'Run a quick diagnostic without notes',done:0,estimated_minutes:20},{id:3,title:'Review the weakest two topics',done:0,estimated_minutes:20},{id:4,title:'Complete a timed practice pass',done:0,estimated_minutes:20},{id:5,title:'Write the one-page final review sheet',done:0,estimated_minutes:20}]}],sources:[{id:1,title:'Fall 2026 calendar.ics',source_type:'calendar_file'}],integrations:[['calendar_file','Calendar file','connected','12 events imported locally.'],['google_calendar','Google Calendar','needs_credentials','OAuth client ID required before live sync can be enabled.'],['canvas','Canvas','needs_credentials','Requires your school Canvas domain and an approved OAuth client.'],['blackboard','Blackboard','needs_admin','Requires an Anthology app registration and campus approval.'],['chatgpt_export','ChatGPT history','ready','Import an exported JSON or HTML archive locally.'],['claude_export','Claude history','ready','Import exported JSON, HTML, Markdown, or text locally.'],['google_docs','Google Docs','ready','Import downloaded Docs as PDF, DOCX, Markdown, or text.'],['icloud_notes','iCloud Notes','ready','Import exported notes as HTML, Markdown, or text.']].map(([provider,label,status,detail])=>({provider,label,status,detail})),automations:[{id:1,name:'Weekly calculus review',trigger_type:'weekly',enabled:1,run_count:2}],repeated_signals:[{recurrence_key:'weekly review',occurrences:3,example_title:'Weekly chapter review'}],preferences:{onboarded:true,launch_at_login:false,automations_paused:false,storage_cap_mb:512,companion_transcript_retention_days:0},activity:[{id:2,action_type:'assistant_reschedule',summary:'Assignment 3 due date updated',detail:'Changed in memory and Calendar using your Linear Algebra syllabus context.',status:'done',created_at:new Date(Date.now()-1800000).toISOString()},{id:1,action_type:'assistant_draft',summary:'Professor absence email drafted',detail:'Used "Dr. Ibarra," your section number, and your usual professional tone.',status:'review',created_at:new Date(Date.now()-3600000).toISOString()}],ranked:[{id:1,title:'Matrix transformations set',due_date:plus(1),course_name:'Linear Algebra',days_left:1,reason:'Due tomorrow in Linear Algebra.'},{id:2,title:'Linked list lab',due_date:plus(3),course_name:'Computer Science II',days_left:3,reason:'Due in 3 days.'}],gpa:{overall:3.54,courses:[{course:'Linear Algebra',letter:'A-',known_weight:30,assumed_weight:70},{course:'Computer Science II',letter:'B+',known_weight:45,assumed_weight:55}]}};
+  let desktopChoice='auto';
+  const desktopLabels={'claude-code':'Claude Code',anthropic:'Anthropic API',gemini:'Google Gemini',openai:'OpenAI',groq:'Groq',openrouter:'OpenRouter',nvidia:'Nvidia',opencode:'opencode go',ollama:'Ollama (local)',custom:'Custom endpoint'};
+  const desktopKeys={'claude-code':false,anthropic:false,gemini:true,openai:false,groq:false,openrouter:false,nvidia:false,opencode:false,ollama:false,custom:false};
+  const desktopNeedsKey={'claude-code':false,anthropic:true,gemini:true,openai:true,groq:true,openrouter:true,nvidia:true,opencode:true,ollama:false,custom:false};
+  const desktopModelsSaved={gemini:'gemini-3.6-flash'};
+  const desktopStatus=async()=>{const resolved=desktopChoice==='auto'?'claude-code':desktopChoice;return {cli:true,apiKey:desktopKeys.anthropic||desktopKeys.gemini,encryptionAvailable:true,provider:resolved,providerChoice:desktopChoice,model:resolved==='claude-code'?'claude-sonnet-5':(desktopModelsSaved[resolved]||''),defaultModel:resolved==='claude-code'?'claude-sonnet-5':'provider default',configured:resolved!=='none'&&(!desktopNeedsKey[resolved]||Boolean(desktopKeys[resolved])),labels:desktopLabels,needsKey:desktopNeedsKey,keys:{...desktopKeys},desktopModels:{...desktopModelsSaved},baseUrl:desktopBaseUrlValue};};
+  let desktopBaseUrlValue='';
+  return {getState:async()=>data,updateTask:async()=>{},updateTaskStep:async()=>{},updateAssignment:async(id)=>{data.assignments=data.assignments.filter((a)=>a.id!==id);data.ranked=data.ranked.filter((r)=>r.id!==id);},addTask:async(task)=>{task.id=Date.now();task.course_name='General';task.done=0;task.steps=[1,2,3,4,5].map((id,index)=>({id:Date.now()+id,title:['Define what done looks like','Prepare the materials','Complete the first pass','Resolve the main blocker','Review and close'][index],done:0,estimated_minutes:12}));data.tasks.unshift(task);},setPreference:async(key,value)=>{data.preferences[key]=value;},importSource:async()=>({canceled:false,imported:4,fileName:'semester.ics'}),aiStatus:desktopStatus,aiSetKey:async(value,provider)=>{const target=provider||'anthropic';desktopKeys[target]=true;return {ok:true,provider:target};},aiClearKey:async(provider)=>{const target=provider||'anthropic';desktopKeys[target]=false;return {ok:true,provider:target};},aiSetProvider:async(provider)=>{desktopChoice=provider;return {ok:true,provider};},aiSetDesktopModel:async(payload)=>{const provider=payload&&payload.provider;if(provider){if(payload.model)desktopModelsSaved[provider]=payload.model;else delete desktopModelsSaved[provider];}return {ok:true,provider,model:payload&&payload.model};},aiSetBaseUrl:async(value)=>{desktopBaseUrlValue=String(value||'');return {ok:true,baseUrl:desktopBaseUrlValue};},settingsStatus:async()=>({path:'/home/local/.config/jarvis/settings.json',read:'ok',error:'',encrypted:true,preferences:14,secrets:2}),settingsExport:async()=>({ok:true,path:'/home/local/settings-export.json',encrypted:true}),settingsResetPreferences:async()=>({ok:true,cleared:3}),dataClearCompanionTranscripts:async()=>({messages:12,sessions:2}),dataDeleteAll:async()=>({canceled:true}),aiTest:async()=>({ok:true}),syllabusImport:async()=>({sourceId:1,fileName:'COSC 1437 Syllabus.pdf',data:{course:{name:'Computer Science II',code:'COSC 1437',credit_hours:4,term:'Fall 2026'},grade_weights:[{category:'Homework',weight_pct:20},{category:'Labs',weight_pct:20},{category:'Midterm',weight_pct:25},{category:'Final',weight_pct:35}],assignments:[{title:'Linked list lab',due_date:plus(6),category:'Labs'},{title:'Homework 1: recursion',due_date:plus(9),category:'Homework'},{title:'Midterm exam',due_date:plus(30),category:'Midterm'}]}}),syllabusExtract:async()=>({error:'source_missing'}),syllabusConfirm:async()=>({ok:true,courseId:3,assignments:3,weights:4}),authConfig:async()=>({supabase:false,googleCalendar:false,outlook:true}),outlookStatus:async()=>({configured:true,connected:true,email:'you@utdallas.edu'}),outlookInbox:async()=>({messages:[{subject:'Assignment 3 deadline moved to Friday',from_name:'Dr. Lina Ibarra',from_address:'ibarra@utdallas.edu',received_at:new Date(Date.now()-3600000).toISOString(),preview:'Canvas will update tonight. The new deadline is Friday at 11:59pm.',unread:true,important:false},{subject:'Fall internship fair registration opens',from_name:'UTD Career Center',from_address:'careers@utdallas.edu',received_at:new Date(Date.now()-7200000).toISOString(),preview:'Registration opens this week for the fall fair.',unread:false,important:false}]}),styleProfile:async()=>({ready:true,exemplars:38,formality:'balanced',avgSentenceWords:16}),listActivity:async()=>data.activity,assistantParse:async(text)=>{const isQ=/\?|what|how|when|should/i.test(text);return isQ?{proposal:{command:{intent:'question',question:text,summary_for_user:''},resolved:{},notes:[],needs_confirm:false}}:{proposal:{command:{intent:'add_task',title:text.slice(0,60),due_date:plus(1),summary_for_user:`Create task "${text.slice(0,40)}" due tomorrow.`,confidence:0.9},resolved:{},notes:[],needs_confirm:true}};},assistantExecute:async()=>({ok:true,message:'Done (preview).'}),authSession:async()=>({user:null,configured:false}),syncStatus:async()=>({configured:false,authenticated:false,enabled:false}),addAutomation:async(item)=>{data.automations.unshift({...item,id:Date.now(),enabled:1,run_count:0});},updateAutomation:async()=>{},bridgeStatus:async()=>({connected:true,updated_at:new Date().toISOString()}),storageStatus:async()=>({dbBytes:4823040,sourceBytes:2411520,capBytes:536870912,usedBytes:7234560}),saveState:async()=>({ok:true,kind:null,message:null,failedSince:null}),onSaveState:()=>{},sourceText:async()=>'Professor: Dr. Lina Ibarra, ibarra@utdallas.edu',
     companionStatus:async()=>({running:true,visible:true,capturing:false,stealth:false}),
     companionControl:async(action)=>({running:true,visible:action!=='hide',capturing:action==='capture-start',stealth:false}),
-    aiListModels:async()=>({ok:true,models:[{id:'claude-sonnet-5',label:'Claude Sonnet 5'},{id:'claude-haiku-4-5',label:'Claude Haiku 4.5'}]}),
+    aiListModels:async()=>({ok:true,models:[{id:'claude-sonnet-5',label:'Claude Sonnet 5'},{id:'claude-haiku-4-5',label:'Claude Haiku 4.5'},{id:'gemini-3.6-flash',label:'Gemini 3.6 Flash'}]}),
     companionAiStatus:async(provider)=>({provider:provider||'gemini',keys:{gemini:true},vision:true,customBaseUrl:'',model:'gemini-3.6-flash',models:{fast:'gemini-3.6-flash',smart:'gemini-3.6-pro'}}),
     companionAiSetKey:async()=>({ok:true,provider:'gemini'}), companionAiClearKey:async()=>({ok:true}),
     companionAiListModels:async()=>({ok:true,models:[{id:'gemini-3.6-flash',label:'Gemini 3.6 Flash'},{id:'gemini-3.6-pro',label:'Gemini 3.6 Pro'}]}),

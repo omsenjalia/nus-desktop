@@ -1,53 +1,22 @@
-const { safeStorage } = require('electron');
-const fs = require('fs');
-const path = require('path');
+// Kept as a thin compatibility layer over src/settings-file.js, where keys now
+// live alongside the rest of the settings in one JSON file. auth.js, gcal.js
+// and outlook.js call these names; nothing about their contract changes, and
+// the old userData/secrets/*.enc layout is folded into the JSON file on first
+// launch by settings-file.js (the old files are left in place as a backup).
+'use strict';
 
-let secretsDir = null;
+const settingsFile = require('./settings-file');
 
 function init(userDataDir) {
-  secretsDir = path.join(userDataDir, 'secrets');
-  fs.mkdirSync(secretsDir, { recursive: true });
+  // Main calls settingsFile.init({ userDataDir, legacyPreferences }) once at
+  // boot; this stays so existing holders of this module keep working.
+  settingsFile.init({ userDataDir });
 }
 
-function isAvailable() {
-  return safeStorage && safeStorage.isEncryptionAvailable();
-}
-
-function setSecret(key, value) {
-  if (!secretsDir) throw new Error('secrets: not initialized');
-  if (!isAvailable()) {
-    fs.writeFileSync(path.join(secretsDir, `${key}.plain`), String(value), { mode: 0o600 });
-    return;
-  }
-  const buf = safeStorage.encryptString(String(value));
-  fs.writeFileSync(path.join(secretsDir, `${key}.enc`), buf, { mode: 0o600 });
-}
-
-function getSecret(key) {
-  if (!secretsDir) return null;
-  const encPath = path.join(secretsDir, `${key}.enc`);
-  const plainPath = path.join(secretsDir, `${key}.plain`);
-  if (fs.existsSync(encPath)) {
-    if (!isAvailable()) return null;
-    return safeStorage.decryptString(fs.readFileSync(encPath));
-  }
-  if (fs.existsSync(plainPath)) {
-    return fs.readFileSync(plainPath, 'utf8');
-  }
-  return null;
-}
-
-function deleteSecret(key) {
-  if (!secretsDir) return;
-  for (const ext of ['enc', 'plain']) {
-    const p = path.join(secretsDir, `${key}.${ext}`);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  }
-}
-
-function listSecrets() {
-  if (!secretsDir || !fs.existsSync(secretsDir)) return [];
-  return fs.readdirSync(secretsDir).map((f) => f.replace(/\.(enc|plain)$/, ''));
-}
+function isAvailable() { return settingsFile.isAvailable(); }
+function setSecret(key, value) { return settingsFile.setSecret(key, value); }
+function getSecret(key) { return settingsFile.getSecret(key); }
+function deleteSecret(key) { return settingsFile.deleteSecret(key); }
+function listSecrets() { return settingsFile.listSecrets(); }
 
 module.exports = { init, setSecret, getSecret, deleteSecret, listSecrets, isAvailable };

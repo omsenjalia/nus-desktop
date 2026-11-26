@@ -1,6 +1,10 @@
-// BYO-AI provider: Claude Code CLI when installed, else the user's own
-// Anthropic API key (safeStorage-encrypted via secrets.js). All calls run in
-// the main process; the renderer only ever sees booleans and parsed results.
+// BYO-AI provider. The desktop brain runs on whatever the person configured:
+// Claude Code (their subscription), an Anthropic key, Gemini's free tier,
+// Ollama (fully local), Groq, OpenRouter, opencode, or any OpenAI-compatible
+// endpoint. Claude is a default, not a requirement. Keys live in the settings
+// JSON file (safeStorage-encrypted when the OS keychain exists). All calls
+// run in the main process; the renderer only ever sees booleans and parsed
+// results.
 const { execFile, spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -16,13 +20,113 @@ const CLI_TIMEOUT_MS = 180000;
 // Unset, J.A.R.V.I.S pins the mid-tier default: never whatever most expensive
 // model the user's account happens to default to.
 let modelOverride = null;
-const MODEL_ID_PATTERN = /^[\w][\w.\-/:@]{0,137}$/;
 function setModel(value) {
   const clean = String(value == null ? '' : value).trim();
   modelOverride = MODEL_ID_PATTERN.test(clean) ? clean : null;
   return activeModel();
 }
-function activeModel() { return modelOverride || process.env.NUS_AI_MODEL || MODEL; }
+// The model the Claude family runs. The user's pick (Settings) wins; unset,
+// the mid-tier default, never whatever their account defaults to. This is
+// deliberately one shape so the CLI pin and the API path agree.
+function activeModel() { return modelOverride || desktopModelFor('claude-code') || desktopModelFor('anthropic') || process.env.NUS_AI_MODEL || MODEL; }
+
+const providerMatrix = require('./ai-providers');
+const MODEL_ID_PATTERN = providerMatrix.MODEL_ID_PATTERN;
+const PROVIDERS = providerMatrix.PROVIDERS;
+const PROVIDER_LABELS = providerMatrix.PROVIDER_LABELS;
+const PROVIDER_DEFAULTS = providerMatrix.PROVIDER_DEFAULTS;
+const OPENAI_STYLE = providerMatrix.OPENAI_STYLE;
+const needsKey = providerMatrix.needsKey;
+const keyNameFor = providerMatrix.keyNameFor;
+function desktopPreferences() { return require('./settings-file').getPreferences(); }
+function desktopModelFor(provider) { return providerMatrix.desktopModelFor(desktopPreferences(), provider); }
+function desktopProviderChoice() { return providerMatrix.desktopProviderChoice(desktopPreferences()); }
+function desktopBaseUrl() { return providerMatrix.desktopBaseUrl(desktopPreferences()); }
+function keyFor(provider) {
+  if (provider === 'claude-code') return '';
+  return secrets.getSecret(keyNameFor(provider)) || '';
+}
+// The provider the desktop actually uses right now. 'auto' means: Claude
+// Code when installed, else the first provider with a key stored, else a
+// configured custom endpoint, else nothing (the UI says so plainly).
+async function resolveProvider() {
+  const choice = desktopProviderChoice();
+  if (choice !== 'auto') return choice;
+  const cliPath = await detectCli();
+  if (cliPath) return 'claude-code';
+  for (const p of ['anthropic', 'gemini', 'groq', 'openai', 'openrouter', 'nvidia', 'opencode']) {
+    if (keyFor(p)) return p;
+  }
+  if (desktopBaseUrl()) return 'custom';
+  return 'none';
+}
+function resolveModel(provider) {
+  if (provider === 'claude-code' || provider === 'anthropic') return activeModel();
+  return providerMatrix.modelFor(provider, desktopPreferences(), null, process.env);
+}
+function resolveBaseUrl(provider) {
+  return providerMatrix.baseUrlFor(provider, desktopPreferences(), process.env);
+}
+function setDesktopProvider(value) {
+  const clean = providerMatrix.cleanProviderChoice(value);
+  require('./settings-file').setPreference('desktop_provider', clean);
+  return clean;
+}
+function setDesktopModel(provider, model) {
+  const target = providerMatrix.isProvider(provider) ? provider : null;
+  if (!target) return { error: 'unknown_provider' };
+  const { model: clean, error } = providerMatrix.cleanModelId(model);
+  if (error) return { error };
+  const prefs = desktopPreferences();
+  const models = { ...(prefs.desktop_models && typeof prefs.desktop_models === 'object' ? prefs.desktop_models : {}) };
+  if (clean) models[target] = clean; else delete models[target];
+  require('./settings-file').setPreference('desktop_models', models);
+  if (target === 'claude-code' || target === 'anthropic') modelOverride = clean || null;
+  return { ok: true, provider: target, model: clean };
+}
+function setDesktopBaseUrl(value) {
+  const { baseUrl, error } = providerMatrix.cleanBaseUrl(value);
+  if (error) return { error };
+  require('./settings-file').setPreference('desktop_base_url', baseUrl);
+  return { ok: true, baseUrl };
+}
+function setProviderKey(value, providerArg) {
+  const provider = PROVIDERS.includes(String(providerArg || '')) ? String(providerArg) : null;
+  const key = String(value || '').trim();
+  if (!provider) {
+    // Backwards-compatible: no provider argument saves the Anthropic key.
+    if (!key) return { error: 'empty_key' };
+    secrets.setSecret(KEY_NAME, key);
+    return { ok: true, provider: 'anthropic' };
+  }
+  if (provider === 'claude-code') return { error: 'claude_code_needs_no_key' };
+  if (!key && needsKey(provider)) return { error: 'empty_key' };
+  if (!key) { secrets.deleteSecret(keyNameFor(provider)); return { ok: true, provider, cleared: true }; }
+  secrets.setSecret(keyNameFor(provider), key);
+  return { ok: true, provider };
+}
+function clearProviderKey(providerArg) {
+  const provider = PROVIDERS.includes(String(providerArg || '')) ? String(providerArg) : null;
+  secrets.deleteSecret(keyNameFor(provider || 'anthropic'));
+  return { ok: true, provider: provider || 'anthropic' };
+}
+async function desktopStatus() {
+  const provider = await resolveProvider();
+  const models = desktopPreferences().desktop_models || {};
+  return {
+    provider,
+    providerChoice: desktopProviderChoice(),
+    providers: PROVIDERS,
+    labels: PROVIDER_LABELS,
+    needsKey: Object.fromEntries(PROVIDERS.map((p) => [p, needsKey(p)])),
+    keys: Object.fromEntries(PROVIDERS.map((p) => [p, Boolean(keyFor(p))])),
+    model: resolveModel(provider),
+    defaultModel: PROVIDER_DEFAULTS[provider] || '',
+    desktopModels: { ...models },
+    baseUrl: desktopBaseUrl(),
+    configured: provider !== 'none' && (!needsKey(provider) || Boolean(keyFor(provider))),
+  };
+}
 const IS_WIN = process.platform === 'win32';
 
 // Where a Claude Code install lands on macOS and Linux. A GUI app on macOS
@@ -118,19 +222,31 @@ async function detectCliUnix() {
 
 async function status() {
   const cliPath = await detectCli();
-  return { cli: Boolean(cliPath), apiKey: Boolean(secrets.getSecret(KEY_NAME)), encryptionAvailable: secrets.isAvailable() };
+  const desk = await desktopStatus();
+  const configured = desk.configured || Boolean(cliPath);
+  return {
+    cli: Boolean(cliPath),
+    apiKey: PROVIDERS.slice(1).some((p) => Boolean(keyFor(p))),
+    encryptionAvailable: secrets.isAvailable(),
+    provider: desk.provider,
+    providerChoice: desk.providerChoice,
+    model: resolveModel(desk.provider),
+    defaultModel: PROVIDER_DEFAULTS[desk.provider] || '',
+    configured,
+    keys: desk.keys,
+    labels: desk.labels,
+    needsKey: desk.needsKey,
+    baseUrl: desk.baseUrl,
+    desktopModels: desk.desktopModels,
+  };
 }
 
-function setApiKey(value) {
-  const key = String(value || '').trim();
-  if (!key) return { error: 'empty_key' };
-  secrets.setSecret(KEY_NAME, key);
-  return { ok: true };
+function setApiKey(value, provider) {
+  return setProviderKey(value, provider);
 }
 
-function clearApiKey() {
-  secrets.deleteSecret(KEY_NAME);
-  return { ok: true };
+function clearApiKey(provider) {
+  return clearProviderKey(provider);
 }
 
 function truncate(text) {
@@ -304,35 +420,38 @@ function runCliStream(cliPath, prompt, onEvent, { partials = true } = {}) {
 // Streamed completion with tool events. onEvent receives {type:'delta'|'tool'},
 // and the resolved value carries the final text or error like complete().
 async function completeStream(prompt, onEvent) {
-  const cliPath = await detectCli();
-  const apiKey = secrets.getSecret(KEY_NAME);
+  const provider = await resolveProvider();
   let result;
-  if (cliPath) {
-    result = await runCliStream(cliPath, prompt, onEvent);
-    if (result.error === 'retry_without_partials') {
-      result = await runCliStream(cliPath, prompt, onEvent, { partials: false });
+  if (provider === 'claude-code') {
+    const cliPath = await detectCli();
+    if (cliPath) {
+      result = await runCliStream(cliPath, prompt, onEvent);
+      if (result.error === 'retry_without_partials') {
+        result = await runCliStream(cliPath, prompt, onEvent, { partials: false });
+      }
+      if (result.error === 'cli_spawn_failed') cliPathCache = undefined;
+    } else {
+      result = { error: 'cli_not_detected', detail: 'Claude Code was not found on this machine.' };
     }
-    if (result.error === 'cli_spawn_failed') cliPathCache = undefined;
-    if (result.error && apiKey) {
-      result = await runApi(apiKey, prompt);
+    const fallback = keyFor('anthropic');
+    if (result && result.error && fallback) {
+      result = await runApi(fallback, truncate(String(prompt)), activeModel());
       if (result.text) onEvent({ type: 'delta', text: result.text });
     }
-  } else if (apiKey) {
-    result = await runApi(apiKey, prompt);
-    if (result.text) onEvent({ type: 'delta', text: result.text });
   } else {
-    result = { error: 'no_ai' };
+    result = await complete(prompt);
+    if (result.text) onEvent({ type: 'delta', text: result.text });
   }
   if (result.error && result.error !== 'no_ai') logAiError(result.error, result.detail);
   return result;
 }
 
-async function runApi(apiKey, prompt) {
+async function runApi(apiKey, prompt, model) {
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: activeModel(), max_tokens: 8192, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: model || activeModel(), max_tokens: 8192, messages: [{ role: 'user', content: prompt }] }),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -344,6 +463,77 @@ async function runApi(apiKey, prompt) {
     if (data.stop_reason === 'refusal') return { error: 'api_refused' };
     const block = (data.content || []).find((item) => item.type === 'text');
     return { text: block ? block.text : '' };
+  } catch (error) {
+    return { error: error.name === 'TimeoutError' ? 'api_timeout' : 'api_network', detail: String(error.message || '').slice(0, 300) };
+  }
+}
+
+
+// ---- other providers: one-shot completions, Anthropic-shaped input out ----
+// guide-input.js hands every guidance request as Anthropic-native content
+// blocks (text + inline base64 image); convert them per provider instead of
+// flattening, so screen pointing works on Gemini and OpenAI-compatible too.
+function blocksOf(prompt) {
+  return Array.isArray(prompt) ? prompt : [{ type: 'text', text: String(prompt) }];
+}
+function geminiPartsOf(prompt) {
+  return blocksOf(prompt).map((block) => {
+    if (block.type === 'text') return { text: block.text };
+    // guide-input emits { type: 'image', source: { type: 'base64', media_type, data } }
+    return { inlineData: { mimeType: block.source?.media_type || 'image/png', data: block.source?.data || '' } };
+  });
+}
+function openAIContentOf(prompt) {
+  const blocks = blocksOf(prompt);
+  if (blocks.length === 1 && blocks[0].type === 'text') return blocks[0].text;
+  return blocks.map((block) => {
+    if (block.type === 'text') return { type: 'text', text: block.text };
+    const media = block.source?.media_type || 'image/png';
+    return { type: 'image_url', image_url: { url: `data:${media};base64,${block.source?.data || ''}` } };
+  });
+}
+async function runGemini(apiKey, prompt, model) {
+  try {
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-goog-api-key': apiKey },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: geminiPartsOf(prompt) }], generationConfig: { maxOutputTokens: 8192 } }),
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      let detail = `http_${response.status}`;
+      try { detail = (await response.json())?.error?.message?.slice(0, 300) || detail; } catch {}
+      return { error: 'api_failed', detail };
+    }
+    const data = await response.json();
+    const candidate = data?.candidates?.[0];
+    const text = (candidate?.content?.parts || []).map((part) => part.text || '').join('');
+    if (!text && candidate?.finishReason === 'SAFETY') return { error: 'api_refused' };
+    return { text };
+  } catch (error) {
+    return { error: error.name === 'TimeoutError' ? 'api_timeout' : 'api_network', detail: String(error.message || '').slice(0, 300) };
+  }
+}
+async function runOpenAICompatible({ provider, apiKey, prompt, model, baseUrl }) {
+  try {
+    const headers = { 'content-type': 'application/json' };
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
+    if (provider === 'openrouter') headers['HTTP-Referer'] = 'https://github.com/omsenjalia/nus-desktop';
+    const body = { model, max_tokens: 4096, messages: [{ role: 'user', content: openAIContentOf(prompt) }] };
+    const response = await fetch(baseUrl.replace(/\/+$/, '') + '/chat/completions', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(API_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      let detail = `http_${response.status}`;
+      try { detail = (await response.json())?.error?.message?.slice(0, 300) || detail; } catch {}
+      return { error: 'api_failed', detail };
+    }
+    const data = await response.json();
+    const text = data?.choices?.[0]?.message?.content;
+    return { text: typeof text === 'string' ? text : '' };
   } catch (error) {
     return { error: error.name === 'TimeoutError' ? 'api_timeout' : 'api_network', detail: String(error.message || '').slice(0, 300) };
   }
@@ -395,16 +585,33 @@ function logAiError(code, detail) {
 
 async function complete(prompt, options = {}) {
   const guide = options.guidance ? require('./guide-input').guideInput(prompt, options.imageDataUrl) : null;
-  const cliPath = await detectCli();
-  const apiKey = secrets.getSecret(KEY_NAME);
+  const provider = await resolveProvider();
   let result;
-  if (cliPath) {
-    result = await runCli(cliPath, prompt, guide);
-    if (result.error === 'cli_spawn_failed') cliPathCache = undefined;
-    // A broken CLI should never strand a user who also gave us a key.
-    if (result.error && apiKey) result = await runApi(apiKey, guide ? guide.content : prompt);
-  } else if (apiKey) {
-    result = await runApi(apiKey, guide ? guide.content : prompt);
+  if (provider === 'claude-code') {
+    // An explicit Claude Code choice that is not there is an error that says
+    // so, not a silent slide into another provider.
+    const cliPath = await detectCli();
+    if (!cliPath) {
+      result = { error: 'cli_not_detected', detail: 'Claude Code was not found on this machine. Pick Gemini, Ollama, Groq or any provider in Settings > AI provider, or install Claude Code.' };
+    } else {
+      result = await runCli(cliPath, prompt, guide);
+      if (result.error === 'cli_spawn_failed') cliPathCache = undefined;
+      // A broken CLI should never strand a user who also gave us a key.
+      const fallback = keyFor('anthropic');
+      if (result.error && fallback) result = await runApi(fallback, guide ? guide.content : truncate(String(prompt)), activeModel());
+    }
+  } else if (provider === 'anthropic') {
+    result = await runApi(keyFor('anthropic'), guide ? guide.content : truncate(String(prompt)), activeModel());
+  } else if (provider === 'gemini') {
+    result = await runGemini(keyFor('gemini'), guide ? guide.content : truncate(String(prompt)), resolveModel('gemini'));
+  } else if (OPENAI_STYLE.has(provider)) {
+    result = await runOpenAICompatible({
+      provider,
+      apiKey: keyFor(provider),
+      prompt: guide ? guide.content : truncate(String(prompt)),
+      model: resolveModel(provider),
+      baseUrl: resolveBaseUrl(provider),
+    });
   } else {
     result = { error: 'no_ai' };
   }
@@ -426,4 +633,4 @@ async function extractSyllabus(text) {
   return parseModelJson(result.text);
 }
 
-module.exports = { status, setApiKey, clearApiKey, testConnection, extractSyllabus, complete, completeStream, cancelStream, parseJsonBlock, MODEL, KEY_NAME, setModel, activeModel };
+module.exports = { status, setApiKey, clearApiKey, testConnection, extractSyllabus, complete, completeStream, cancelStream, parseJsonBlock, MODEL, KEY_NAME, PROVIDERS, PROVIDER_LABELS, PROVIDER_DEFAULTS, setModel, activeModel, setDesktopProvider, setDesktopModel, setDesktopBaseUrl, desktopProviderChoice, desktopStatus, resolveModel, resolveProvider };
