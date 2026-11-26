@@ -82,24 +82,59 @@ async function download(url, dest, { zip = false, minBytes = MIN_BYTES, fetchImp
   throw new Error(`${last && last.message} (gave up after ${attempts} attempts)`);
 }
 
-function findExe(dir) {
-  for (const name of ['whisper-cli.exe', 'main.exe']) {
-    const stack = [dir];
-    while (stack.length) {
-      const d = stack.pop();
-      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-        const full = path.join(d, entry.name);
-        if (entry.isDirectory()) stack.push(full);
-        else if (entry.name.toLowerCase() === name) return full;
-      }
+// The CLI has been renamed once already (main.exe became whisper-cli.exe), and
+// the release zip carries whatever name the build produced, sometimes with the
+// version in it. The app spawns whisper-cli.exe (src/stt-local.js), so a
+// versioned spelling is accepted here and renamed on the way in — but never
+// something like whisper-server.exe or whisper-bench.exe, which are different
+// programs that would answer the wrong arguments.
+const EXE_NAMES = ['whisper-cli.exe', 'main.exe'];
+const EXE_PATTERN = /^(whisper-cli|main)(?:[-_.](?:b\d+|v?\d[\w.-]*))?\.exe$/i;
+
+function findAll(dir, match) {
+  const out = [];
+  const stack = [dir];
+  while (stack.length) {
+    const d = stack.pop();
+    for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (match(entry.name)) out.push(full);
     }
+  }
+  return out;
+}
+
+// The CLI in dir, however deep the zip nested it: the exact names first
+// (whisper-cli.exe before main.exe), then a versioned spelling.
+function findExe(dir) {
+  const rank = (file) => EXE_NAMES.indexOf(path.basename(file).toLowerCase());
+  const exact = findAll(dir, (name) => EXE_NAMES.includes(name.toLowerCase()));
+  if (exact.length) return exact.sort((a, b) => rank(a) - rank(b))[0];
+  const versioned = findAll(dir, (name) => EXE_PATTERN.test(name));
+  if (versioned.length) {
+    const isCli = (file) => path.basename(file).toLowerCase().startsWith('whisper-cli');
+    return versioned.sort((a, b) => Number(isCli(b)) - Number(isCli(a)))[0];
   }
   return null;
 }
 
+// Move what sits beside the binary up into dir, then give the CLI the name the
+// app spawns. main.exe is left alone: it is the old name for the same program
+// and src/stt-local.js looks for both.
+function adopt(dir, exe) {
+  flatten(dir, exe);
+  const here = path.join(dir, path.basename(exe));
+  const wanted = path.join(dir, 'whisper-cli.exe');
+  const base = path.basename(here).toLowerCase();
+  if (base === 'whisper-cli.exe' || !base.startsWith('whisper-cli') || fs.existsSync(wanted)) return here;
+  fs.renameSync(here, wanted);
+  return wanted;
+}
+
 // Keep only what whisper-cli needs; the zip ships benches, tests and demos.
 function prune(dir) {
-  const keep = /^(whisper-cli\.exe|main\.exe|.*\.dll)$/i;
+  const keep = /^(?:whisper-cli(?:[-_.](?:b\d+|v?\d[\w.-]*))?\.exe|main\.exe|.*\.dll)$/i;
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) fs.rmSync(full, { recursive: true, force: true });
@@ -176,13 +211,22 @@ async function main() {
     await download(BIN_URL, zipPath, { zip: true });
     extract(zipPath, vendorDir);
     fs.rmSync(zipPath, { force: true });
-    const found = findExe(vendorDir);
-    if (found) flatten(vendorDir, found);
+    // The names, before anything is removed. The first red run of this step
+    // said "binary not found" over a directory that pruning had already
+    // emptied: a symptom with the evidence deleted. Now the log carries the
+    // layout of whatever the release shipped.
+    console.log(`  extracted: ${listTree(vendorDir, 20)}`);
   }
+  // Identify before deleting, not after. The old order pruned what it did not
+  // recognise and then reported that nothing was there.
+  const found = findExe(vendorDir);
+  if (!found) {
+    throw new Error(`no whisper-cli.exe in ${path.relative(root, vendorDir)}; it contains: ${listTree(vendorDir)}`);
+  }
+  const exe = adopt(vendorDir, found);
   prune(vendorDir);
-  const exe = findExe(vendorDir);
-  if (!exe) {
-    throw new Error(`whisper binary not found after extract; ${path.relative(root, vendorDir)} contains: ${listTree(vendorDir)}`);
+  if (!fs.existsSync(exe)) {
+    throw new Error(`pruning vendor/whisper removed the binary it had just chosen (${path.relative(root, exe)})`);
   }
   console.log(`Binary ready: ${exe}`);
 
@@ -200,8 +244,10 @@ module.exports = {
   BIN_URL,
   MODEL_BASE_URL,
   MODEL_SMALL_URL,
+  adopt,
   download,
   extract,
+  findAll,
   findExe,
   flatten,
   listTree,

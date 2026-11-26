@@ -113,6 +113,41 @@ test('a zip that has already been unpacked is not downloaded again', () => {
   assert.equal(setup.findExe(dir), path.join(dir, 'main.exe'), 'and main.exe is the fallback the app also reads');
 });
 
+test('a versioned CLI is accepted, renamed to the name the app spawns', () => {
+  // The release zip carries whatever name the build produced. whisper-cli.exe
+  // is what src/stt-local.js spawns, so a versioned spelling is adopted and
+  // renamed rather than shipped under a name nothing looks for.
+  const dir = tmpdir();
+  fs.writeFileSync(path.join(dir, 'whisper-cli-b4938.exe'), 'MZ');
+  fs.writeFileSync(path.join(dir, 'ggml.dll'), 'x');
+  const found = setup.findExe(dir);
+  assert.equal(path.basename(found), 'whisper-cli-b4938.exe');
+  const exe = setup.adopt(dir, found);
+  assert.equal(path.basename(exe), 'whisper-cli.exe');
+  assert.equal(setup.findExe(dir), path.join(dir, 'whisper-cli.exe'), 'and it is found by the app');
+  setup.prune(dir);
+  assert.deepEqual(fs.readdirSync(dir).sort(), ['ggml.dll', 'whisper-cli.exe'], 'prune keeps the binary it was given');
+});
+
+test('a different program in the same zip is never mistaken for the CLI', () => {
+  // whisper-server.exe and whisper-cli.exe take different arguments; adopting
+  // the wrong one produces a binary that is present and cannot transcribe.
+  const dir = tmpdir();
+  for (const name of ['whisper-server.exe', 'whisper-bench.exe', 'whisper-talk-llama.exe', 'whisper-client.exe']) {
+    fs.writeFileSync(path.join(dir, name), 'MZ');
+  }
+  assert.equal(setup.findExe(dir), null, 'none of these is the CLI');
+  setup.prune(dir);
+  assert.deepEqual(fs.readdirSync(dir), [], 'and none of them is kept either');
+});
+
+test('main.exe is the old name for the same program, and keeps its own name', () => {
+  const dir = tmpdir();
+  fs.writeFileSync(path.join(dir, 'main.exe'), 'MZ');
+  const exe = setup.adopt(dir, setup.findExe(dir));
+  assert.equal(path.basename(exe), 'main.exe', 'nothing is renamed that the app already looks for');
+});
+
 test('the nesting is flattened, and only what whisper-cli needs is kept', () => {
   const dir = tmpdir();
   const nested = path.join(dir, 'Release');
