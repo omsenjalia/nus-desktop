@@ -72,8 +72,12 @@ test('when a keychain exists the file is encrypted at rest, not plaintext JSON',
   const raw = fs.readFileSync(path.join(dir, 'settings.json'), 'utf8');
   assert.ok(!raw.includes('gsk_secret_value'), 'the key never touches the disk in plaintext');
   assert.match(raw, /"encrypted": true/);
-  const mode = fs.statSync(path.join(dir, 'settings.json')).mode & 0o777;
-  assert.equal(mode, 0o600);
+  if (process.platform !== 'win32') {
+    // POSIX modes round-trip only off Windows; on Windows the mode bits are
+    // ignored and stat reports a default, which proves nothing either way.
+    const mode = fs.statSync(path.join(dir, 'settings.json')).mode & 0o777;
+    assert.equal(mode, 0o600);
+  }
   // And it comes back through the keychain.
   init(dir, { injected: fakeSafeStorage(true) });
   assert.equal(settingsFile.getSecret('desktop_key_groq'), 'gsk_secret_value');
