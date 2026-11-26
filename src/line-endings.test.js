@@ -21,13 +21,21 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
+// The list of test files, named with forward slashes on every platform.
+//
+// These names are not only paths: they are printed in messages and compared
+// against the forward-slash literals below (KNOWN, and the labels in the output).
+// path.join gives `companion\test\x.test.js` on Windows, so the one accepted
+// instance stopped matching its own allowlist and the guard failed on Windows
+// only — a test that was green everywhere the CI did not run. Node reads a
+// forward slash on Windows, so one spelling works for both jobs.
 function testFiles() {
   const out = [];
   for (const dir of ['src', 'companion/test']) {
     const full = path.join(ROOT, dir);
     if (!fs.existsSync(full)) continue;
     for (const name of fs.readdirSync(full)) {
-      if (name.endsWith('.test.js')) out.push(path.join(dir, name));
+      if (name.endsWith('.test.js')) out.push(dir + '/' + name);
     }
   }
   return out.sort();
@@ -86,7 +94,11 @@ test('a multi-line search uses a regex or a normaliser, never a bare "\\n"', () 
   const KNOWN = [
     'companion/test/cue-samples.test.js', // searches for a two-line snippet
   ];
-  const unexpected = fragile.filter((loc) => !KNOWN.some((k) => loc.startsWith(k)));
+  // Compared separator-insensitively as well: the names already carry '/', but
+  // this guard failed on Windows for exactly one reason — a `\` where the
+  // allowlist had a '/' — and a guard that only works on the platform the CI
+  // runs on is the failure it was written to catch.
+  const unexpected = fragile.filter((loc) => !KNOWN.some((k) => loc.replace(/\\/g, '/').startsWith(k)));
   assert.deepEqual(unexpected, [], 'multi-line string search that a CRLF checkout would break: ' + unexpected.join(', '));
 });
 
@@ -99,15 +111,29 @@ test('a test that reads a file for an exact substring normalises it first, where
 });
 
 test('the test script does not rely on a shell expanding a glob', () => {
-  // `node --test src/*.test.js` works because bash and zsh expand the glob
-  // before node sees it. cmd.exe does not expand globs, so on a Windows runner
-  // node receives the literal string. It happens to work (node --test reads it
-  // as a pattern), but a script that depends on which shell runs it is a script
-  // that fails on someone else's machine. Quoted, node does the expansion
-  // itself, identically everywhere.
+  // This was written the other way round first, and the wrong way passed.
+  //
+  // Quoting the glob (`node --test 'src/*.test.js'`) is what works on bash and
+  // what broke Windows, not the fix: bash strips the quotes and node expands
+  // the pattern, but cmd.exe has no single-quote quoting and no globbing, so it
+  // hands node the string *including* the quote characters. node matches no
+  // file, prints `# tests 0`, and exits 0. The Windows Test step was green in
+  // zero seconds while running nothing at all.
+  //
+  // A script whose meaning depends on which shell npm started is the bug. So
+  // no glob at all: the patterns live in scripts/run-tests.js, node expands
+  // them identically on every platform, and an empty find is an error.
   const pkg = JSON.parse(read('package.json'));
   assert.equal(typeof pkg.scripts.test, 'string');
-  assert.doesNotMatch(pkg.scripts.test, /\s(src|companion\/test)\/\*\.test\.js/, 'the glob must be quoted');
-  assert.match(pkg.scripts.test, /'src\/\*\.test\.js'|"src\/\*\.test\.js"/, 'quoted, so node expands it');
-  assert.match(pkg.scripts.test, /'companion\/test\/\*\.test\.js'|"companion\/test\/\*\.test\.js"/);
+  assert.doesNotMatch(pkg.scripts.test, /[*?[\]]/, 'no glob for a shell to expand, on any platform');
+  assert.doesNotMatch(pkg.scripts.test, /['"]/, 'no quoted pattern that only one shell strips');
+  assert.match(pkg.scripts.test, /node scripts\/run-tests\.js$/);
+
+  const runner = read('scripts/run-tests.js');
+  // The same two directories the quarantined globs named, expanded one level
+  // deep in node.
+  assert.match(runner, /const suites = \['src', 'companion\/test'\]/);
+  assert.match(runner, /endsWith\('\.test\.js'\)/, 'it collects *.test.js files');
+  assert.match(runner, /files\.length === 0[\s\S]*?process\.exit\(1\)/, 'finding nothing fails instead of passing');
+  assert.match(runner, /spawnSync\(process\.execPath, \['--test'/, 'the runner starts node --test itself');
 });

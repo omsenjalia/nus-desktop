@@ -41,6 +41,16 @@ permissions:
 env:
   FABLE_ARCHIVE: kokoro-multi-lang-v1_0.tar.bz2
   FABLE_PIN: 60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4
+  # The same asset's size, from the release API. A download that stops early
+  # hashes wrong, and "hash mismatch" alone does not say whether the network
+  # truncated it or the pin is stale; the size says which.
+  FABLE_BYTES: 349886476
+  # The folder inside the archive, which is also the folder the app reads:
+  # companion/src/voice/index.js looks for resources/voice/<folder>/voices.bin,
+  # and electron-builder copies vendor/voice to resources/voice (src/ci-windows
+  # .test.js holds both halves of that). The archive is extracted as it comes, so
+  # this name is the layout, not a choice.
+  FABLE_FOLDER: kokoro-multi-lang-v1_0
 
 jobs:
   build:
@@ -140,8 +150,25 @@ jobs:
           # No restore-keys: a partial whisper directory is a broken one, and
           # setup:voice treats a stale binary as done (findExe succeeds).
 
+      # setup:voice reaches two networks that are not npm (a GitHub release and
+      # Hugging Face), and when it fails the run log is unreadable from outside,
+      # exactly like the Test step's was. Same treatment: the reason goes into
+      # the annotation, the whole output into an artifact. A four-second red
+      # step that says only "exit code 1" is the failure this replaces.
       - name: Fetch the whisper binary the Windows build bundles
-        run: npm run setup:voice
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'setup-voice.log'
+          npm run setup:voice 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $tail = (Get-Content $log -Tail 40) -join "`n"
+            if ($tail.Length -gt 60000) { $tail = $tail.Substring($tail.Length - 60000) }
+            if (-not $tail) { $tail = 'setup:voice failed and printed nothing.' }
+            Write-Output "::error title=setup:voice failed::$($tail -replace "`r?`n", '%0A')"
+            Copy-Item $log (Join-Path $env:GITHUB_WORKSPACE 'setup-voice.log') -Force
+          }
+          exit $code
 
       # The pre-made voice lines are the slowest thing in this build: a few
       # hundred short WAVs, synthesized one at a time on the runner's CPU. That
@@ -180,31 +207,55 @@ jobs:
           # the hash is checked before anything is unpacked.
           ARCHIVE_DIR: vendor\voice-archive
         run: |
-          $url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2'
-          $root = Join-Path $env:GITHUB_WORKSPACE 'vendor\voice'
-          $keep = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR
-          New-Item -ItemType Directory -Force -Path $root, $keep | Out-Null
-          $archive = Join-Path $keep $env:FABLE_ARCHIVE
-          if (-not (Test-Path $archive)) {
-            Write-Host 'Fable archive not cached; downloading.'
-            Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
-          } else {
-            Write-Host 'Fable archive restored from cache; verifying it anyway.'
+          # A 334 MB download from a release page, and a failure here has to be
+          # readable from outside the run: the log lives in storage nobody can
+          # open, so the reason goes into an annotation, with the size of what
+          # landed beside it. Same deal the Test step made.
+          $archive = Join-Path (Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR) $env:FABLE_ARCHIVE
+          try {
+            $url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2'
+            $root = Join-Path $env:GITHUB_WORKSPACE 'vendor\voice'
+            $keep = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR
+            New-Item -ItemType Directory -Force -Path $root, $keep | Out-Null
+            $archive = Join-Path $keep $env:FABLE_ARCHIVE
+            if (-not (Test-Path $archive)) {
+              Write-Host 'Fable archive not cached; downloading.'
+              Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
+            } else {
+              Write-Host 'Fable archive restored from cache; verifying it anyway.'
+            }
+            $size = (Get-Item $archive).Length
+            Write-Host "Fable archive is $size bytes (the release has $env:FABLE_BYTES)."
+            # The whole pin from companion/src/voice/index.js, not a prefix: the
+            # app refuses a model that does not match this hash, so the build must
+            # refuse the same one rather than shipping it and failing at run time.
+            $want = $env:FABLE_PIN
+            $got = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
+            if ($got -ne $want) {
+              # A cached archive that fails its pin is worse than no cache: it
+              # would fail every later run too. Drop it and let the next run
+              # download cleanly.
+              Remove-Item $archive -Force
+              throw "voice archive hash $got is not $want (removed the bad archive; re-run)"
+            }
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $root
+            # Inside the folder, not beside it. The archive keeps its top-level
+            # directories and the app wants them: modelDir() is
+            # resources/voice/<folder>, and hasModel() then asks that folder for
+            # voices.bin and a .onnx. A guard that looked one level up failed a
+            # perfect 334 MB download for being in the right place.
+            $model = Join-Path $root $env:FABLE_FOLDER
+            $missing = @('voices.bin', 'model.onnx') | Where-Object { -not (Test-Path (Join-Path $model $_)) }
+            if ($missing) {
+              Get-ChildItem -Recurse $root | Select-Object -First 40 FullName | Out-String | Write-Host
+              throw "the voice files did not land in vendor/voice/$env:FABLE_FOLDER (missing: $($missing -join ', '))"
+            }
+          } catch {
+            $size = if (Test-Path $archive) { "$((Get-Item $archive).Length) bytes" } else { 'no file' }
+            $msg = "$($_.Exception.Message) [archive: $size, expected $env:FABLE_BYTES]"
+            Write-Output "::error title=Fable voice archive failed::$($msg -replace "`r?`n", '%0A')"
+            exit 1
           }
-          # The whole pin from companion/src/voice/index.js, not a prefix: the
-          # app refuses a model that does not match this hash, so the build must
-          # refuse the same one rather than shipping it and failing at run time.
-          $want = $env:FABLE_PIN
-          $got = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
-          if ($got -ne $want) {
-            # A cached archive that fails its pin is worse than no cache: it
-            # would fail every later run too. Drop it and let the next run
-            # download cleanly.
-            Remove-Item $archive -Force
-            throw "voice archive hash $got is not $want (removed the bad archive; re-run)"
-          }
-          & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $root
-          if (-not (Test-Path (Join-Path $root 'voices.bin'))) { Get-ChildItem -Recurse $root | Out-String | Write-Host; throw 'the voice files did not land in vendor/voice' }
 
       # `npm run dist` makes the fixed lines as its first act, so there is no
       # --check before it: on a clean checkout the lines do not exist yet, and a
@@ -220,9 +271,25 @@ jobs:
 
       # The asar scan is the same one the Mac build runs: it fails the build if
       # anything that must not ship is packed.
+      # The scan prints its findings as JSON and exits 1, and the first failure
+      # of this step was unreadable from outside like the others were: the whole
+      # point of the report is the list of paths in it. So it goes into the
+      # annotation and the artifact.
       - name: Scan the packed asar
         if: ${{ !inputs.smoke_only }}
-        run: node scripts/package-security-check.js dist/win-unpacked/resources/app.asar
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'asar-scan.log'
+          node scripts/package-security-check.js dist/win-unpacked/resources/app.asar 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $report = (Get-Content $log -Tail 60) -join "`n"
+            if ($report.Length -gt 60000) { $report = $report.Substring($report.Length - 60000) }
+            if (-not $report) { $report = 'the scan failed and printed nothing.' }
+            Write-Output "::error title=packed asar scan failed::$($report -replace "`r?`n", '%0A')"
+            Copy-Item $log (Join-Path $env:GITHUB_WORKSPACE 'asar-scan.log') -Force
+          }
+          exit $code
 
       # Launch the app we are about to publish. --smoke creates a window, opens
       # the database and starts the Companion, then quits itself; a package that
@@ -254,6 +321,24 @@ jobs:
         with:
           name: test-output
           path: test-output.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      # And the same for the step that fetches the whisper binary, which is the
+      # one non-npm download the build depends on.
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('setup-voice.log') != '' }}
+        with:
+          name: setup-voice-output
+          path: setup-voice.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('asar-scan.log') != '' }}
+        with:
+          name: asar-scan-output
+          path: asar-scan.log
           if-no-files-found: ignore
           retention-days: 14
 
