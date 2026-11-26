@@ -211,8 +211,11 @@ test('the Companion outlives the dashboard and can be removed from it', () => {
 
 test('the CLI runs a pinned model, not the user most expensive default', () => {
   const aiJs = read('src/ai.js');
-  assert.match(aiJs, /'--model', MODEL/, 'the spawn pins the model');
-  assert.match(aiJs, /const MODEL = 'claude-sonnet-5'/, 'and it is the mid-tier one');
+  // The pin can be moved, but only to a model the user explicitly chose in
+  // Settings; unset it is the mid-tier default, never the account default.
+  assert.match(aiJs, /'--model', activeModel\(\)/, 'the spawn pins the model');
+  assert.match(aiJs, /const MODEL = 'claude-sonnet-5'/, 'and the pinned default is the mid-tier one');
+  assert.match(aiJs, /function activeModel\(\) \{ return modelOverride \|\| process\.env\.NUS_AI_MODEL \|\| MODEL; \}/, 'an unset override resolves to the pinned default');
   assert.match(aiJs, /cli_spend_limit/, 'a spend cap is reported as its own fixable case');
 });
 

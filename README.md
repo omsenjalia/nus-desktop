@@ -67,6 +67,12 @@ Keys are stored on this device only, encrypted with the OS keychain where one
 exists. Hands needs a vision-capable model — the provider picker says which of
 the nine can see a screenshot.
 
+Neither key card asks you to remember a model ID. Both fetch the provider's
+own `/models` list after you save a key (or when you press **Find models**) and
+fill a pick list with it, so the Fast and Smart models for the overlay, and the
+model the desktop itself runs, are chosen from what the provider actually
+serves. Typing an ID by hand still works, for the providers that ship no list.
+
 ## Install and run
 
 ```
@@ -80,7 +86,13 @@ npm start
 | `npm run smoke` | Boots and exits |
 | `npm run tour` | Replays the walkthrough |
 | `npm run dist` | Builds the Windows installer into `dist/` |
-| `npm run setup:voice` | Downloads whisper.cpp + the base English model (~65 MB) into `vendor/` |
+| `npm run setup:voice` | Downloads whisper.cpp + the base English model (~65 MB) into `vendor/` (build machines) |
+
+The mic on the Today tab and the talk key set themselves up from inside the
+app: **Settings → Voice → Set up voice** installs the whisper.cpp engine into
+the app's own data folder (when the build shipped without one) and downloads
+the 57 MB speech model. Nothing you say leaves this machine. `npm run
+setup:voice` is only for preparing a Windows build.
 
 ### Building it
 

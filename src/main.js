@@ -22,6 +22,7 @@ const style = require('./style');
 const draft = require('./draft');
 const ai = require('./ai');
 const sttLocal = require('./stt-local');
+const { listModels } = require('./model-list');
 const assistant = require('./assistant');
 const vaultNotes = require('./vault-notes');
 const { initAutoUpdate } = require('./updater');
@@ -37,7 +38,7 @@ const companionApp = require('../companion');
 // validation and the dashboard's picker cannot drift.
 const COMPANION_PROVIDERS = ['gemini', 'openai', 'anthropic', 'nvidia', 'ollama', 'groq', 'openrouter', 'opencode', 'custom'];
 
-const RENDERER_PREFERENCE_KEYS = new Set(['gpa_scale', 'brain_viewport', 'brain_layout', 'email_accounts', 'email_default', 'onboarded', 'focus_areas', 'auth_prompted', 'theme']);
+const RENDERER_PREFERENCE_KEYS = new Set(['gpa_scale', 'brain_viewport', 'brain_layout', 'email_accounts', 'email_default', 'onboarded', 'focus_areas', 'auth_prompted', 'theme', 'ai_model']);
 const crashHandlers = installCrashHandlers(app, dialog);
 
 let gcalCache = [];
@@ -775,6 +776,7 @@ app.whenReady().then(async () => {
   secrets.init(path.join(app.getPath('userData')));
   style.init(path.join(app.getPath('userData')));
   sttLocal.init({ userData: app.getPath('userData') });
+  ai.setModel(api.getPreferences().ai_model || null);
   bridgeFile = path.join(app.getPath('userData'), 'context.json');
   // Personal build: no account session to restore, and no subscription to
   // check. createLicense() answers with a plan that is always on.
@@ -1126,7 +1128,11 @@ const handlers = {
   },
   'preferences:set': (_event, key, value) => {
     if (!RENDERER_PREFERENCE_KEYS.has(key)) return { error: 'preference_not_allowed' };
-    return mutate(api.setPreference)(key, value);
+    const result = mutate(api.setPreference)(key, value);
+    // The desktop model picker: the AI module reads the choice at call time,
+    // so apply it the moment it changes (only when the save worked).
+    if (key === 'ai_model' && !(result && result.error)) ai.setModel(value);
+    return result;
   },
   'bridge:status': () => ({ connected: fs.existsSync(bridgeFile), path: bridgeFile, updated_at: fs.existsSync(bridgeFile) ? fs.statSync(bridgeFile).mtime.toISOString() : null }),
   // Personal build: no accounts. These channels stay registered so an older
@@ -1220,7 +1226,7 @@ const handlers = {
     if (!result.error) await refreshGcalCache();
     return result;
   },
-  'ai:status': async () => ai.status(),
+  'ai:status': async () => ({ ...await ai.status(), model: ai.activeModel() }),
   'ai:set-key': (_event, value) => {
     const result = ai.setApiKey(value);
     if (result && result.ok) trackEvent('key_connected', { provider: 'anthropic' });
@@ -1228,6 +1234,12 @@ const handlers = {
   },
   'ai:clear-key': () => ai.clearApiKey(),
   'ai:test': async () => ai.testConnection(),
+  // The model picker: Ask the key's own model list endpoint what it can reach.
+  'ai:list-models': async () => {
+    const key = secrets.getSecret(ai.KEY_NAME);
+    if (!key) return { ok: false, error: 'No Anthropic API key saved. Claude Code needs no key and runs on the model pinned in Settings.' };
+    return listModels('anthropic', { apiKey: key });
+  },
   'syllabus:import': async (_event, filePath) => {
     const result = await importSyllabus(typeof filePath === 'string' ? filePath : null);
     return result;
@@ -1285,11 +1297,19 @@ const handlers = {
   'voice:transcribe': (_event, pcm) => sttLocal.transcribePcm(Buffer.from(pcm)),
   'voice:status': () => sttLocal.status(),
   'voice:setup': async () => {
+    // The engine first: a model with no engine transcribes nothing. On
+    // Windows the app installs whisper.cpp into userData when the build
+    // shipped without it; on macOS it points at Homebrew instead.
+    try {
+      await sttLocal.ensureBinary((stage) => sendToDesktop('ai:event', { type: 'setup-engine', stage }));
+    } catch (error) {
+      return { error: String((error && error.message) || error).slice(0, 300) };
+    }
     try {
       await sttLocal.ensureModel((pct) => sendToDesktop('ai:event', { type: 'setup', pct }));
       return sttLocal.status();
     } catch (error) {
-      return { error: String((error && error.message) || error).slice(0, 200) };
+      return { error: 'Model download failed: ' + String((error && error.message) || error).slice(0, 180) };
     }
   },
   'voice:cancel': () => ai.cancelStream(),
@@ -1315,11 +1335,14 @@ const handlers = {
   // has to find the overlay's gear icon to get the overlay working.
   // The Companion's own provider. Personal build adds groq, openrouter,
   // opencode go and a custom endpoint (which may be keyless and local).
-  'companion:ai:status': () => {
+  'companion:ai:status': (_event, providerArg) => {
     const store = require('../companion/src/store');
     const s = store.getSettings();
     const names = ['gemini', 'openai', 'anthropic', 'nvidia', 'ollama', 'groq', 'openrouter', 'opencode', 'custom'];
-    const provider = s.provider;
+    // The desktop picker asks about whichever provider is on screen; without
+    // an argument it reports the persisted one.
+    const provider = COMPANION_PROVIDERS.includes(providerArg) ? providerArg : s.provider;
+    const tiers = (s.models || {})[provider] || {};
     return {
       provider,
       keys: Object.fromEntries(names.map((p) => [p, Boolean(s.apiKeys && s.apiKeys[p])])),
@@ -1327,8 +1350,32 @@ const handlers = {
       // model that cannot read one.
       vision: store.hasVision(provider),
       customBaseUrl: s.customBaseUrl || '',
-      model: ((s.models || {})[provider] || {})[s.smart ? 'smart' : 'fast'] || '',
+      model: tiers[s.smart ? 'smart' : 'fast'] || '',
+      models: { fast: tiers.fast || '', smart: tiers.smart || '' },
     };
+  },
+  // Ask the provider's /models endpoint what this key can reach, so the
+  // settings pickers offer the real list instead of remembered IDs.
+  'companion:ai:list-models': async (_event, providerArg, baseUrlArg) => {
+    if (!COMPANION_PROVIDERS.includes(providerArg)) return { ok: false, error: 'Unknown provider.' };
+    const store = require('../companion/src/store');
+    const s = store.getSettings();
+    const key = (s.apiKeys || {})[providerArg] || '';
+    const baseUrl = String(baseUrlArg == null ? (s.customBaseUrl || '') : baseUrlArg).trim();
+    return listModels(providerArg, { apiKey: key, baseUrl });
+  },
+  // One tier of the Companion's model pair. Empty clears back to unset.
+  'companion:ai:set-model': (_event, payload) => {
+    const provider = COMPANION_PROVIDERS.includes(payload?.provider) ? payload.provider : null;
+    if (!provider) return { error: 'unknown_provider' };
+    const tier = payload?.tier === 'smart' ? 'smart' : 'fast';
+    const model = String(payload?.model == null ? '' : payload.model).trim().slice(0, 200);
+    const store = require('../companion/src/store');
+    // Cleared means back to the shipping default; a provider that ships none
+    // (opencode, custom) stays unset, which is its documented state.
+    const effective = model || store.defaultModel(provider, tier);
+    store.setSettings({ models: { [provider]: { [tier]: effective } } });
+    return { ok: true, provider, tier, model: effective };
   },
   'companion:ai:set-key': (_event, payload) => {
     const companionStore = require('../companion/src/store');

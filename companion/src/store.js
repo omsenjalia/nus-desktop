@@ -377,6 +377,10 @@ module.exports = {
   setStandalone(value) { standalone = value === true; },
   getSettings() { return load(); },
   setSettings(patch) { load(); data = deepMerge(data, patch || {}); pickKeyedProvider(data); save(); return data; },
+  // The shipping default for a provider and tier, or '' when none is known.
+  // Used to make "cleared in Settings" mean "back to the default" rather
+  // than "unset", except where no default exists.
+  defaultModel(provider, tier) { return (DEFAULTS.models[provider] || {})[tier] || ''; },
   // One-time note if the standalone Companion's settings could not be migrated.
   migrationNote() { load(); return migrationNote; },
   // The last save's error, empty when it reached the disk.
