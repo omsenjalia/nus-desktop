@@ -11,6 +11,18 @@ const secrets = require('./secrets');
 const MODEL = 'claude-sonnet-5';
 const KEY_NAME = 'anthropic_api_key';
 const CLI_TIMEOUT_MS = 180000;
+
+// The user can pick any model their key (or the CLI) can reach, from Settings.
+// Unset, J.A.R.V.I.S pins the mid-tier default: never whatever most expensive
+// model the user's account happens to default to.
+let modelOverride = null;
+const MODEL_ID_PATTERN = /^[\w][\w.\-/:@]{0,137}$/;
+function setModel(value) {
+  const clean = String(value == null ? '' : value).trim();
+  modelOverride = MODEL_ID_PATTERN.test(clean) ? clean : null;
+  return activeModel();
+}
+function activeModel() { return modelOverride || process.env.NUS_AI_MODEL || MODEL; }
 const IS_WIN = process.platform === 'win32';
 
 // Where a Claude Code install lands on macOS and Linux. A GUI app on macOS
@@ -133,7 +145,7 @@ function runCli(cliPath, prompt, guide) {
     // Pin the model. Without --model the CLI uses whatever the user's Claude
     // Code default is, which can be their most expensive one; syllabus reading
     // and short commands do not need it, and students pay for that default.
-    const args = ['-p', '--model', MODEL, '--output-format', guide ? 'stream-json' : 'json', ...(guide ? ['--verbose', ...guide.cliArgs] : [])];
+    const args = ['-p', '--model', activeModel(), '--output-format', guide ? 'stream-json' : 'json', ...(guide ? ['--verbose', ...guide.cliArgs] : [])];
     const child = isShim
       ? spawn('cmd.exe', ['/c', cliPath, ...args], opts)
       : spawn(cliPath, args, opts);
@@ -209,7 +221,7 @@ function runCliStream(cliPath, prompt, onEvent, { partials = true } = {}) {
   return new Promise((resolve) => {
     const isShim = /\.(cmd|bat)$/i.test(cliPath);
     const opts = { cwd: app.getPath('userData'), env: cliEnv(), windowsHide: true };
-    const args = ['-p', '--model', MODEL, '--output-format', 'stream-json', '--verbose'];
+    const args = ['-p', '--model', activeModel(), '--output-format', 'stream-json', '--verbose'];
     if (partials) args.push('--include-partial-messages');
     const child = isShim
       ? spawn('cmd.exe', ['/c', cliPath, ...args], opts)
@@ -320,7 +332,7 @@ async function runApi(apiKey, prompt) {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-      body: JSON.stringify({ model: MODEL, max_tokens: 8192, messages: [{ role: 'user', content: prompt }] }),
+      body: JSON.stringify({ model: activeModel(), max_tokens: 8192, messages: [{ role: 'user', content: prompt }] }),
       signal: AbortSignal.timeout(API_TIMEOUT_MS),
     });
     if (!response.ok) {
@@ -414,4 +426,4 @@ async function extractSyllabus(text) {
   return parseModelJson(result.text);
 }
 
-module.exports = { status, setApiKey, clearApiKey, testConnection, extractSyllabus, complete, completeStream, cancelStream, parseJsonBlock, MODEL };
+module.exports = { status, setApiKey, clearApiKey, testConnection, extractSyllabus, complete, completeStream, cancelStream, parseJsonBlock, MODEL, KEY_NAME, setModel, activeModel };

@@ -248,7 +248,7 @@
 
       <section id="view-settings" class="view">
         <div class="settings-grid">
-          <section class="settings-nav panel-surface"><div class="settings-statue"><img src="assets/nus-statue-mark.png" alt="" /></div><h2 id="settings-name">Local</h2><p id="settings-email">This machine only</p><button class="settings-link active" type="button" data-card="license-card">This install</button><button class="settings-link" type="button" data-card="bridge-card">Companion</button><button class="settings-link" type="button" data-card="storage-card">Data</button></section>
+          <section class="settings-nav panel-surface"><div class="settings-statue"><img src="assets/nus-statue-mark.png" alt="" /></div><h2 id="settings-name">Local</h2><p id="settings-email">This machine only</p><button class="settings-link active" type="button" data-card="license-card">This install</button><button class="settings-link" type="button" data-card="ai-card">AI</button><button class="settings-link" type="button" data-card="companion-ai-card">Companion AI</button><button class="settings-link" type="button" data-card="voice-card">Voice</button><button class="settings-link" type="button" data-card="storage-card">Data</button></section>
           <div class="settings-stack">
             <section class="setting-card" id="theme-card">
               <div>
@@ -292,6 +292,13 @@
                   <label class="field"><span>Anthropic API key</span><input id="ai-key" type="password" placeholder="sk-ant-…" autocomplete="off" /></label>
                   <div class="sheet-actions"><span id="ai-test-result"></span><div><button id="ai-key-save" class="primary-button">Save key</button><button id="ai-test" class="quiet-button">Test</button><button id="ai-key-clear" class="quiet-button hidden">Remove key</button></div></div>
                 </div>
+                <div class="auth-form">
+                  <label class="field"><span>Model</span>
+                    <div class="model-find-row"><input id="ai-model" type="text" list="ai-model-options" placeholder="claude-sonnet-5" autocomplete="off" spellcheck="false" /><button id="ai-models-refresh" class="quiet-button" type="button">Find models</button></div>
+                  </label>
+                  <datalist id="ai-model-options"></datalist>
+                  <p id="ai-models-hint" class="field-hint">Type an ID or pick one from the provider&rsquo;s own list. Applies to Claude Code too.</p>
+                </div>
               </div>
               <span id="ai-badge" class="status-badge">Checking</span>
             </section>
@@ -314,11 +321,32 @@
                   </select></label>
                   <label class="field"><span id="companion-ai-key-label">Gemini API key</span><input id="companion-ai-key" type="password" placeholder="AIza…" autocomplete="off" /></label>
                   <label class="field hidden" id="companion-ai-base-field"><span>Base URL</span><input id="companion-ai-base" type="text" placeholder="https://host/v1" autocomplete="off" spellcheck="false" /></label>
+                  <label class="field"><span>Fast model <span class="field-note">Smart off</span></span>
+                    <div class="model-find-row"><input id="companion-ai-model-fast" type="text" list="companion-ai-model-options" autocomplete="off" spellcheck="false" /><button id="companion-ai-models-refresh" class="quiet-button" type="button">Find models</button></div>
+                  </label>
+                  <label class="field"><span>Smart model <span class="field-note">Smart on</span></span>
+                    <input id="companion-ai-model-smart" type="text" list="companion-ai-model-options" autocomplete="off" spellcheck="false" />
+                  </label>
+                  <datalist id="companion-ai-model-options"></datalist>
+                  <p id="companion-ai-models-hint" class="field-hint">Models come straight from the provider&rsquo;s /models endpoint. Type one, or pick from the list.</p>
                   <p id="companion-ai-vision" class="field-hint hidden">This provider's model cannot read a screenshot, so the screen features will ask before sending one.</p>
                   <div class="sheet-actions"><span id="companion-ai-result"></span><div><button id="companion-ai-save" class="primary-button" type="button">Save</button><button id="companion-ai-clear" class="quiet-button hidden" type="button">Remove key</button></div></div>
                 </div>
               </div>
               <span id="companion-ai-badge" class="status-badge">Checking</span>
+            </section>
+            <section class="setting-card" id="voice-card">
+              <div style="width:100%">
+                <div class="section-kicker">Voice</div>
+                <h3 id="voice-title">Free local voice</h3>
+                <p id="voice-copy">J.A.R.V.I.S transcribes on this device with an open source Whisper build. Set it up once and your voice never leaves this computer. A configured cloud speech key can still be used as a fallback.</p>
+                <div class="voice-status-rows">
+                  <div class="voice-status-row"><span>Whisper engine</span><span id="voice-engine-status" class="voice-status-value">Checking…</span></div>
+                  <div class="voice-status-row"><span>Speech model (57 MB)</span><span id="voice-model-status" class="voice-status-value">Checking…</span></div>
+                </div>
+                <div class="sheet-actions"><span id="voice-setup-result"></span><button id="voice-setup-button" class="primary-button" type="button">Set up voice</button></div>
+              </div>
+              <span id="voice-badge" class="status-badge">Checking</span>
             </section>
             <section class="setting-card"><div><div class="section-kicker">Walkthrough</div><h3>Replay the tour</h3><p>Step through J.A.R.V.I.S again with the Companion narrating alongside. Nothing you have imported is touched.</p><div class="sheet-actions"><span></span><button id="replay-tour" class="quiet-button" type="button">Replay the walkthrough</button></div></div><span class="status-badge">Anytime</span></section>
             <section class="setting-card" id="gpa-scale-card">

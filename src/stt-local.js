@@ -16,6 +16,10 @@ const { pcmToWav, rms16 } = require('../companion/src/wav');
 const MODEL_URL = 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en-q5_1.bin';
 const MODEL_NAMES = ['ggml-small.en-q5_1.bin', 'ggml-base.en-q5_1.bin'];
 const EXE_NAMES = process.platform === 'win32' ? ['whisper-cli.exe', 'main.exe'] : ['whisper-cli', 'main'];
+// The engine is a Windows build; on a Mac the user points us at a whisper.cpp
+// they installed themselves (brew install whisper-cpp). Checked too, so the
+// brew install is found with no environment variable at all.
+const MAC_BREW_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin'];
 const WHISPER_TIMEOUT_MS = 30_000;
 const MIN_BYTES = 16000 * 2 * 0.4; // 0.4 s of 16 kHz Int16
 const RMS_GATE = 200;
@@ -29,7 +33,10 @@ function binaryDirs() {
   const dirs = [];
   if (process.env.NUS_WHISPER_DIR) dirs.push(process.env.NUS_WHISPER_DIR);
   if (process.resourcesPath) dirs.push(path.join(process.resourcesPath, 'whisper'));
+  // The engine the app installed itself at runtime (Settings > Voice).
+  if (userDataDir) dirs.push(path.join(userDataDir, 'whisper'));
   dirs.push(path.join(__dirname, '..', 'vendor', 'whisper'));
+  if (process.platform === 'darwin') dirs.push(...MAC_BREW_DIRS);
   return dirs;
 }
 
@@ -64,6 +71,28 @@ function findModel() {
 
 function status() {
   return { binary: !!findBinary(), model: !!findModel(), available: !!findBinary() && !!findModel() };
+}
+
+// Install the voice engine itself (the whisper.cpp CLI) into userData, for
+// builds that ship without it. Windows only: the release is a Windows build.
+// On macOS the fix is a package manager, so the error says which one.
+async function ensureBinary(onProgress) {
+  const existing = findBinary();
+  if (existing) return existing;
+  if (!userDataDir) throw new Error('stt_not_initialized');
+  if (process.platform !== 'win32') {
+    throw new Error(process.platform === 'darwin'
+      ? 'On macOS the local engine comes from Homebrew: brew install whisper-cpp, then reopen J.A.R.V.I.S (it is found automatically in the brew bin folders).'
+      : 'The local voice engine is a Windows build; the model can be downloaded, but the engine itself is missing from this build.');
+  }
+  const { installBinary } = require('./whisper-setup');
+  const destDir = path.join(userDataDir, 'whisper');
+  if (onProgress) onProgress('engine');
+  const { exe } = await installBinary({ destDir, log: () => {} });
+  cachedExe = undefined; // rescan so the next findBinary sees the install
+  findBinary();
+  if (onProgress) onProgress('engine-done');
+  return exe;
 }
 
 // Download the base model to userData on first use (renderer asks for consent first).
@@ -157,4 +186,4 @@ async function transcribePcm(pcm, options = {}) {
   }, options);
 }
 
-module.exports = { init, status, ensureModel, transcribePcm, cancel: (sessionId) => transcriptionQueue.cancel(sessionId) };
+module.exports = { init, status, ensureBinary, ensureModel, transcribePcm, cancel: (sessionId) => transcriptionQueue.cancel(sessionId) };

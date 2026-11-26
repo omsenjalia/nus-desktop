@@ -637,6 +637,9 @@ async function renderAiState(){
     $('#ai-copy').textContent='Install Claude Code (detected automatically), or paste an Anthropic API key. Without one, imports still work for calendar .ics files.';
     badge.textContent='Not set';badge.classList.remove('good');
   }
+  const modelInput=$('#ai-model');
+  if(modelInput&&document.activeElement!==modelInput)modelInput.value=(state.data.preferences&&state.data.preferences.ai_model)||'';
+  refreshAnthropicModels(false);
 }
 $('#ai-key-save').addEventListener('click',async()=>{
   const value=$('#ai-key').value;
@@ -645,6 +648,7 @@ $('#ai-key-save').addEventListener('click',async()=>{
   const result=await api.aiSetKey(value);
   if(result.error)return showToast('That key looks empty.');
   $('#ai-test-result').textContent='Key saved.';
+  refreshAnthropicModels(true);
   await renderAiState();
   if(state.pendingSourceId){
     const retry=await api.syllabusExtract(state.pendingSourceId);
@@ -662,6 +666,7 @@ $('#ai-test').addEventListener('click',async()=>{
 $('#ai-key-clear').addEventListener('click',async()=>{
   await api.aiClearKey();
   $('#ai-test-result').textContent='Key removed.';
+  refreshAnthropicModels(true);
   renderAiState();
 });
 
@@ -973,8 +978,70 @@ async function renderSettings(){
   renderSyncState();
   renderAiState();
   renderCompanionAiState();
+  renderVoiceState();
   renderGpaScale();
   renderStorage();
+}
+
+
+// -- Settings: model pickers backed by each provider's /models endpoint --
+const modelFetchCache=new Map();
+const MODEL_FETCH_TTL_MS=5*60*1000;
+function cachedFetch(scope,run){
+  const hit=modelFetchCache.get(scope);
+  if(hit&&Date.now()-hit.at<MODEL_FETCH_TTL_MS)return Promise.resolve(hit.value);
+  const pending=run().then((value)=>{modelFetchCache.set(scope,{at:Date.now(),value});return value;});
+  return pending;
+}
+function fillModelDatalist(datalist,models){
+  if(!datalist)return;
+  datalist.innerHTML=(models||[]).map((m)=>`<option value="${esc(m.id)}">${esc(m.label&&m.label!==m.id?m.label:'')}</option>`).join('');
+}
+function modelHint(el,result,noun){
+  if(!el)return;
+  if(result&&result.ok){el.textContent=`${result.models.length} ${noun} found on the provider's /models list. Type one, or pick from it.`;el.classList.remove('error');return;}
+  el.textContent=(result&&result.error)||'Could not reach the provider. The saved values stay.';el.classList.add('error');
+}
+async function refreshAnthropicModels(force){
+  const datalist=$('#ai-model-options');const hint=$('#ai-models-hint');
+  const scope='anthropic';
+  if(force)modelFetchCache.delete(scope);
+  const result=await cachedFetch(scope,()=>api.aiListModels?.() ?? Promise.resolve({ok:false,error:'This build cannot list models.'})).catch((e)=>({ok:false,error:String(e&&e.message||e)}));
+  if(result&&result.ok)fillModelDatalist(datalist,result.models);
+  modelHint(hint,result,'Claude models');
+}
+function companionModelScope(){
+  const provider=$('#companion-ai-provider')?.value||'gemini';
+  const base=($('#companion-ai-base')?.value||'').trim();
+  return 'companion:'+provider+'|'+(provider==='custom'?base:'');
+}
+async function refreshCompanionModels(force){
+  const provider=$('#companion-ai-provider')?.value||'gemini';
+  const datalist=$('#companion-ai-model-options');const hint=$('#companion-ai-models-hint');
+  const scope=companionModelScope();
+  if(force)modelFetchCache.delete(scope);
+  const baseUrl=($('#companion-ai-base')?.value||'').trim();
+  const result=await cachedFetch(scope,()=>api.companionAiListModels?.(provider,baseUrl) ?? Promise.resolve({ok:false,error:'This build cannot list models.'})).catch((e)=>({ok:false,error:String(e&&e.message||e)}));
+  if(result&&result.ok)fillModelDatalist(datalist,result.models);
+  modelHint(hint,result,'models');
+}
+function wireModelInputs(){
+  $('#ai-models-refresh')?.addEventListener('click',()=>refreshAnthropicModels(true));
+  $('#ai-model')?.addEventListener('change',async(e)=>{
+    const value=e.target.value.trim();
+    state.data.preferences=state.data.preferences||{};state.data.preferences.ai_model=value;
+    await api.setPreference?.('ai_model',value);
+    const hint=$('#ai-models-hint');if(hint){hint.textContent=value?`Model set to ${value}.`:'Model cleared back to the default (claude-sonnet-5).';hint.classList.remove('error');}
+  });
+  $('#companion-ai-models-refresh')?.addEventListener('click',()=>refreshCompanionModels(true));
+  for(const [id,tier] of [['#companion-ai-model-fast','fast'],['#companion-ai-model-smart','smart']]){
+    $(id)?.addEventListener('change',async(e)=>{
+      const provider=$('#companion-ai-provider')?.value||'gemini';
+      const value=e.target.value.trim();
+      await api.companionAiSetModel?.(provider,tier,value);
+      const hint=$('#companion-ai-models-hint');if(hint){hint.textContent=value?`${tier==='smart'?'Smart':'Fast'} model saved as ${value}.`:`${tier==='smart'?'Smart':'Fast'} model back to the default.`;hint.classList.remove('error');}
+    });
+  }
 }
 
 // The Companion's provider, managed from the desktop so the overlay is usable
@@ -1001,8 +1068,9 @@ function syncCompanionProviderFields(){
 }
 async function renderCompanionAiState(){
   const badge=$('#companion-ai-badge'); if(!badge)return;
-  const status=await api.companionAiStatus?.().catch(()=>null);
-  const provider=status?.provider||'gemini';
+  const selected=$('#companion-ai-provider')?.value;
+  const status=await api.companionAiStatus?.(selected||undefined).catch(()=>null);
+  const provider=status?.provider||selected||'gemini';
   const select=$('#companion-ai-provider');
   if(select&&!select.dataset.userPicked)select.value=provider;
   const keyless=provider==='ollama'||provider==='custom';
@@ -1012,15 +1080,21 @@ async function renderCompanionAiState(){
   $('#companion-ai-title').textContent=has
     ? `Companion answers through ${(COMPANION_PROVIDER_LABELS[provider]||['this provider'])[0]}`
     : 'Screen guidance can use desktop Claude';
-  if(status?.model)$('#companion-ai-result').textContent=`Model: ${status.model}`;
+  const tiers=(status&&status.models)||{fast:'',smart:''};
+  const fastInput=$('#companion-ai-model-fast'),smartInput=$('#companion-ai-model-smart');
+  if(fastInput&&document.activeElement!==fastInput)fastInput.value=tiers.fast||'';
+  if(smartInput&&document.activeElement!==smartInput)smartInput.value=tiers.smart||'';
+  if(status?.model&&$('#companion-ai-result')&&!$('#companion-ai-result').textContent)$('#companion-ai-result').textContent=`Model: ${status.model}`;
   const base=$('#companion-ai-base'); if(base&&status?.customBaseUrl&&!base.value)base.value=status.customBaseUrl;
   $('#companion-ai-clear')?.classList.toggle('hidden',keyless||!status?.keys?.[provider]);
   syncCompanionProviderFields();
+  refreshCompanionModels(false);
 }
 $('#companion-ai-provider')?.addEventListener('change',()=>{
   const select=$('#companion-ai-provider'); select.dataset.userPicked='1';
   $('#companion-ai-result').textContent='';
   syncCompanionProviderFields();
+  renderCompanionAiState();
 });
 $('#companion-ai-save')?.addEventListener('click',async()=>{
   const provider=$('#companion-ai-provider')?.value||'gemini';
@@ -1031,15 +1105,22 @@ $('#companion-ai-save')?.addEventListener('click',async()=>{
   if(provider==='custom'&&!baseUrl){$('#companion-ai-result').textContent='A custom endpoint needs a base URL.';return;}
   const result=await api.companionAiSetKey({provider,key,baseUrl});
   if($('#companion-ai-key'))$('#companion-ai-key').value='';
+  if(!result?.error){
+    const fast=($('#companion-ai-model-fast')?.value||'').trim(),smart=($('#companion-ai-model-smart')?.value||'').trim();
+    if(fast||smart)await Promise.allSettled([fast?api.companionAiSetModel?.(provider,'fast',fast):undefined,smart?api.companionAiSetModel?.(provider,'smart',smart):undefined]);
+  }
   $('#companion-ai-result').textContent=result?.error?'That key was not accepted.':'Saved. The Knot can answer now.';
+  if(!result?.error)refreshCompanionModels(true);
   renderCompanionAiState();
 });
 $('#companion-ai-clear')?.addEventListener('click',async()=>{
   const provider=$('#companion-ai-provider')?.value||'gemini';
   await api.companionAiClearKey(provider);
   $('#companion-ai-result').textContent='Key removed.';
+  refreshCompanionModels(true);
   renderCompanionAiState();
 });
+wireModelInputs();
 
 // Settings sidebar: each link scrolls its card into view and lights up.
 $$('.settings-link').forEach((link)=>link.addEventListener('click',()=>{
@@ -1898,7 +1979,12 @@ async function askVoice(){
 
 api.onAiEvent?.((ev)=>{
   if(!ev)return;
-  if(ev.type==='setup'){const el=$('#voice-setup-status');if(el)el.textContent=`Downloading voice model… ${ev.pct}%`;return;}
+  if(ev.type==='setup'||ev.type==='setup-engine'){
+    const label=ev.type==='setup'?`Downloading voice model… ${ev.pct}%`:(ev.stage==='engine-done'?'Finishing the voice engine…':'Downloading the voice engine…');
+    const el=$('#voice-setup-status');if(el)el.textContent=label;
+    const settingsEl=$('#voice-setup-result');if(settingsEl)settingsEl.textContent=label;
+    return;
+  }
   if(!voiceOn||!voicePendingAsk)return; // a stream that outlived voice mode
   if(ev.type==='tool'){addVoiceTrace(ev.label);return;}
   if(ev.type==='delta'){
@@ -1922,6 +2008,32 @@ api.onAiEvent?.((ev)=>{
   }
 });
 
+
+// -- Settings: voice setup card --
+async function renderVoiceState(){
+  const badge=$('#voice-badge'); if(!badge)return;
+  const status=await api.voiceStatus?.().catch(()=>null);
+  const engine=Boolean(status&&status.binary),model=Boolean(status&&status.model);
+  const engineEl=$('#voice-engine-status'),modelEl=$('#voice-model-status');
+  if(engineEl){engineEl.textContent=engine?'Installed':'Missing';engineEl.classList.toggle('ok',engine);engineEl.classList.toggle('missing',!engine);}
+  if(modelEl){modelEl.textContent=model?'Downloaded':'Not downloaded';modelEl.classList.toggle('ok',model);modelEl.classList.toggle('missing',!model);}
+  const available=engine&&model;
+  badge.textContent=available?'Ready':'Setup needed';
+  badge.classList.toggle('good',available);
+  const title=$('#voice-title');if(title)title.textContent=available?'Voice is ready':'Free local voice';
+  const button=$('#voice-setup-button');if(button&&!button.disabled)button.textContent=available?'Check again':'Set up voice';
+}
+$('#voice-setup-button')?.addEventListener('click',async()=>{
+  const button=$('#voice-setup-button');const result=$('#voice-setup-result');
+  button.disabled=true;if(result)result.textContent='Working…';
+  const res=await api.voiceSetup?.().catch((e)=>({error:String((e&&e.message)||e)}));
+  button.disabled=false;
+  if(res&&res.available){if(result)result.textContent=IS_MAC?'Voice is ready. Hold Control+Option anywhere to talk.':'Voice is ready. Hold Ctrl+Alt anywhere to talk.';}
+  else if(res&&res.error){if(result)result.textContent=res.error;}
+  else if(result)result.textContent='Something is still missing. Check the rows above.';
+  renderVoiceState();
+});
+
 // -- start / stop / setup --
 function renderVoiceSetup(status){
   const thread=$('#voice-thread');if(!thread)return;
@@ -1932,8 +2044,8 @@ function renderVoiceSetup(status){
     <span>J.A.R.V.I.S transcribes speech on this computer with an open source Whisper model. This local engine transcribes on this device. The Companion can also use a configured cloud speech provider as fallback.</span>
     ${noBinary
       ?(IS_MAC
-        ?'<span>Local voice is not bundled on macOS. Companion speech needs a configured provider, and verified screen pointing is unavailable there.</span>'
-        :'<span>The voice engine is missing from this build. Install a complete J.A.R.V.I.S build, or configure a speech provider in Companion Settings.</span>')
+        ?'<span>The local voice engine is not installed. On macOS it comes from Homebrew: run <code>brew install whisper-cpp</code>, then reopen J.A.R.V.I.S. The 57 MB model downloads here.</span><button id="voice-setup-go" class="primary-button" type="button">Download voice model (57 MB)</button>'
+        :'<span>This build shipped without the voice engine, so it downloads once (whisper.cpp, free and offline) along with the 57 MB model.</span><button id="voice-setup-go" class="primary-button" type="button">Download voice engine and model</button>')
       :'<button id="voice-setup-go" class="primary-button" type="button">Download voice model (57 MB)</button>'}
     <small id="voice-setup-status"></small>
   </div>`;
@@ -1990,7 +2102,7 @@ $('#voice-thread')?.addEventListener('click',async(e)=>{
     const el=$('#voice-setup-status');if(el)el.textContent='Starting download…';
     const res=await api.voiceSetup?.().catch(()=>null);
     if(res&&res.available){await beginListening();}
-    else{if(el)el.textContent=res&&res.error?'Download failed: '+res.error:'Download failed. Check your connection and try again.';b.disabled=false;}
+    else{if(el)el.textContent=res&&res.error?res.error:'Download failed. Check your connection and try again.';b.disabled=false;renderVoiceState();}
     return;
   }
   if(b.id==='voice-cancel-prop'){voiceProposal=null;voiceTurns.push({role:'nus',text:'Okay, holding off. Anything else?'});renderVoiceThread();setVoiceState('listening');return;}
@@ -2162,7 +2274,7 @@ $('#today-list').addEventListener('click',async(event)=>{
 });
 $('#view-history').addEventListener('click',()=>setView('history'));
 window.nus?.onDesktopHistory?.(()=>setView('history'));
-window.nus?.onDesktopVoiceSetup?.(async()=>{setView('today');renderVoiceSetup(await api.voiceStatus?.().catch(()=>null));$('#voice-panel')?.scrollIntoView({block:'nearest'});});
+window.nus?.onDesktopVoiceSetup?.(async()=>{setView('settings');await renderVoiceState();const card=$('#voice-card');if(card){card.scrollIntoView({behavior:'smooth',block:'start'});card.classList.add('flash');setTimeout(()=>card.classList.remove('flash'),1200);}});
 $('#ask-go').addEventListener('click',()=>{const value=askInput.value.trim();if(!value)return;askInput.value='';submitToJarvis(value);});
 askInput.addEventListener('keydown',(event)=>{
   if(event.key==='Escape'){askAnswer.classList.add('hidden');state.proposal=null;renderProposal();return;}
@@ -2464,6 +2576,13 @@ function createPreviewApi(){
   return {getState:async()=>data,updateTask:async()=>{},updateTaskStep:async()=>{},updateAssignment:async(id)=>{data.assignments=data.assignments.filter((a)=>a.id!==id);data.ranked=data.ranked.filter((r)=>r.id!==id);},addTask:async(task)=>{task.id=Date.now();task.course_name='General';task.done=0;task.steps=[1,2,3,4,5].map((id,index)=>({id:Date.now()+id,title:['Define what done looks like','Prepare the materials','Complete the first pass','Resolve the main blocker','Review and close'][index],done:0,estimated_minutes:12}));data.tasks.unshift(task);},setPreference:async(key,value)=>{data.preferences[key]=value;},importSource:async()=>({canceled:false,imported:4,fileName:'semester.ics'}),aiStatus:async()=>({cli:true,apiKey:false,encryptionAvailable:true}),aiSetKey:async()=>({ok:true}),aiClearKey:async()=>({ok:true}),aiTest:async()=>({ok:true}),syllabusImport:async()=>({sourceId:1,fileName:'COSC 1437 Syllabus.pdf',data:{course:{name:'Computer Science II',code:'COSC 1437',credit_hours:4,term:'Fall 2026'},grade_weights:[{category:'Homework',weight_pct:20},{category:'Labs',weight_pct:20},{category:'Midterm',weight_pct:25},{category:'Final',weight_pct:35}],assignments:[{title:'Linked list lab',due_date:plus(6),category:'Labs'},{title:'Homework 1: recursion',due_date:plus(9),category:'Homework'},{title:'Midterm exam',due_date:plus(30),category:'Midterm'}]}}),syllabusExtract:async()=>({error:'source_missing'}),syllabusConfirm:async()=>({ok:true,courseId:3,assignments:3,weights:4}),authConfig:async()=>({supabase:false,googleCalendar:false,outlook:true}),outlookStatus:async()=>({configured:true,connected:true,email:'you@utdallas.edu'}),outlookInbox:async()=>({messages:[{subject:'Assignment 3 deadline moved to Friday',from_name:'Dr. Lina Ibarra',from_address:'ibarra@utdallas.edu',received_at:new Date(Date.now()-3600000).toISOString(),preview:'Canvas will update tonight. The new deadline is Friday at 11:59pm.',unread:true,important:false},{subject:'Fall internship fair registration opens',from_name:'UTD Career Center',from_address:'careers@utdallas.edu',received_at:new Date(Date.now()-7200000).toISOString(),preview:'Registration opens this week for the fall fair.',unread:false,important:false}]}),styleProfile:async()=>({ready:true,exemplars:38,formality:'balanced',avgSentenceWords:16}),listActivity:async()=>data.activity,assistantParse:async(text)=>{const isQ=/\?|what|how|when|should/i.test(text);return isQ?{proposal:{command:{intent:'question',question:text,summary_for_user:''},resolved:{},notes:[],needs_confirm:false}}:{proposal:{command:{intent:'add_task',title:text.slice(0,60),due_date:plus(1),summary_for_user:`Create task "${text.slice(0,40)}" due tomorrow.`,confidence:0.9},resolved:{},notes:[],needs_confirm:true}};},assistantExecute:async()=>({ok:true,message:'Done (preview).'}),authSession:async()=>({user:null,configured:false}),syncStatus:async()=>({configured:false,authenticated:false,enabled:false}),addAutomation:async(item)=>{data.automations.unshift({...item,id:Date.now(),enabled:1,run_count:0});},updateAutomation:async()=>{},bridgeStatus:async()=>({connected:true,updated_at:new Date().toISOString()}),storageStatus:async()=>({dbBytes:4823040,sourceBytes:2411520,capBytes:536870912}),saveState:async()=>({ok:true,kind:null,message:null,failedSince:null}),onSaveState:()=>{},sourceText:async()=>'Professor: Dr. Lina Ibarra, ibarra@utdallas.edu',
     companionStatus:async()=>({running:true,visible:true,capturing:false,stealth:false}),
     companionControl:async(action)=>({running:true,visible:action!=='hide',capturing:action==='capture-start',stealth:false}),
+    aiListModels:async()=>({ok:true,models:[{id:'claude-sonnet-5',label:'Claude Sonnet 5'},{id:'claude-haiku-4-5',label:'Claude Haiku 4.5'}]}),
+    companionAiStatus:async(provider)=>({provider:provider||'gemini',keys:{gemini:true},vision:true,customBaseUrl:'',model:'gemini-3.6-flash',models:{fast:'gemini-3.6-flash',smart:'gemini-3.6-pro'}}),
+    companionAiSetKey:async()=>({ok:true,provider:'gemini'}), companionAiClearKey:async()=>({ok:true}),
+    companionAiListModels:async()=>({ok:true,models:[{id:'gemini-3.6-flash',label:'Gemini 3.6 Flash'},{id:'gemini-3.6-pro',label:'Gemini 3.6 Pro'}]}),
+    companionAiSetModel:async()=>({ok:true}),
+    voiceStatus:async()=>({binary:true,model:true,available:true}),
+    voiceSetup:async()=>({binary:true,model:true,available:true}),
     companionSessions:async()=>([{id:1,started_at:new Date(Date.now()-5400000).toISOString(),ended_at:new Date(Date.now()-3600000).toISOString(),pack:'demo-brief',title:'Pricing objection walkthrough',message_count:6,first_line:'Pricing objection walkthrough'}]),
     companionMessages:async()=>([{id:1,session_id:1,ts:new Date(Date.now()-5400000).toISOString(),channel:'them',text:'The seat pricing feels steep for a student org.',mode:null},{id:2,session_id:1,ts:new Date(Date.now()-5380000).toISOString(),channel:'you',text:'What is the counter on per-seat cost?',mode:'ask'},{id:3,session_id:1,ts:new Date(Date.now()-5375000).toISOString(),channel:'nus',text:'Anchor on outcome per member, not seat: the pack shows a 3x turnaround on sponsor replies.',mode:'ask'}]),
     companionSearch:async()=>([{session_id:1}]),

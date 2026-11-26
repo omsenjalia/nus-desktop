@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('nus', {
   inspectSubmit: payload => calls.push({ kind: 'inspect', payload }), inspectCancel: () => emit('inspect:cleared', {}),
   inspectRegion: () => {}, micPcm: () => {}, systemPcm: () => {}, setIgnoreMouse: () => {}, openPane: () => {}, log: () => {},
   guideAsk: payload => calls.push({ kind: 'guide', payload }), guideDismiss: () => {}, guideKeep: () => {}, guideSkip: () => {}, strandArrived: () => {},
+  aiModels: async () => ({ ok: true, models: [{ id: 'gemini-3.6-flash' }, { id: 'gemini-3.6-pro' }] }),
   knotCornerSet: async () => true, getZoomLevel: () => 0, on: (channel, callback) => { listeners.set(channel, callback); },
 });
 contextBridge.exposeInMainWorld('__fixture', { emit, calls: () => calls.slice() });

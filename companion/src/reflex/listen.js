@@ -39,6 +39,8 @@ function findWhisper(userData) {
   const dirs = [];
   if (process.env.NUS_WHISPER_DIR) dirs.push(process.env.NUS_WHISPER_DIR);
   if (process.resourcesPath) dirs.push(path.join(process.resourcesPath, 'whisper'));
+  // The engine the desktop app installed at runtime (Settings > Voice).
+  if (userData) dirs.push(path.join(userData, 'whisper'));
   dirs.push(path.join(__dirname, '..', '..', '..', 'vendor', 'whisper'));
   dirs.push(path.join(__dirname, '..', '..', '..', '..', 'nus-desktop', 'vendor', 'whisper'));
   let exe = null;

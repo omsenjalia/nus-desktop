@@ -13,6 +13,7 @@ const store = require('./src/store');
 const { captureScreenshot } = require('./src/screen');
 const { createSTT } = require('./src/stt');
 const { createLLM } = require('./src/llm');
+const { listModels } = require('../src/model-list');
 const { plainAskError } = require('./src/ask-error');
 const { MODES } = require('./src/prompts');
 const { appendResumeContext } = require('./src/profile-context');
@@ -516,7 +517,7 @@ async function flushChannel(channel) {
     const settings = store.getSettings();
     const stt = createSTT(settings);
     if (!stt.available) {
-      if (!sttDisabled) { sttDisabled = true; send('status', { message: STANDALONE ? 'Add a Gemini key in Settings, or reinstall to restore the local speech model.' : 'No transcription available. Run voice setup in the desktop app (Today tab mic) for free local transcription, or add an OpenAI (Whisper) or Gemini key in Settings. Screen/LeetCode features work without it.' }); }
+      if (!sttDisabled) { sttDisabled = true; send('status', { message: STANDALONE ? 'Add a Gemini key in Settings, or reinstall to restore the local speech model.' : 'No transcription available. In the J.A.R.V.I.S desktop app open Settings > Voice and press Set up voice for free local transcription, or add an OpenAI (Whisper) or Gemini key in Settings. Screen/LeetCode features work without it.' }); }
       return;
     }
     const res = await stt.transcribe(pcm);
@@ -1627,7 +1628,9 @@ function registerShortcuts() {
 }
 
 const OVERLAY_BOOLEANS = new Set(['speakReplies', 'onboarded', 'introSeen', 'hideFromCapture', 'openMic', 'sounds', 'proactive', 'focusGuard', 'smart', 'tasks', 'knotHidden', 'knotIsland', 'hands']);
-const OVERLAY_STRINGS = new Set(['packPath', 'sparPath', 'resumeContext', 'micDeviceId', 'micDeviceLabel']);
+const OVERLAY_STRINGS = new Set(['packPath', 'sparPath', 'resumeContext', 'micDeviceId', 'micDeviceLabel', 'customBaseUrl']);
+// The providers the overlay's own picker offers; anything else is dropped.
+const OVERLAY_PROVIDERS = new Set(['gemini', 'openai', 'anthropic', 'nvidia', 'ollama', 'groq', 'openrouter', 'opencode', 'custom']);
 const OVERLAY_THEMES = new Set(['jarvis', 'nus']);
 function overlayPatch(patch) {
   const clean = {};
@@ -1639,9 +1642,26 @@ function overlayPatch(patch) {
     // The look. Two values, checked here so a typo cannot leave the overlay
     // with no palette at all.
     else if (key === 'theme' && OVERLAY_THEMES.has(value)) clean[key] = value;
+    else if (key === 'provider' && typeof value === 'string' && OVERLAY_PROVIDERS.has(value)) clean.provider = value;
+    // The model pair the overlay's own Fast/Smart fields offer. Strings are
+    // length-capped and only fast/smart on a known provider are kept.
+    else if (key === 'models' && value && typeof value === 'object' && !Array.isArray(value)) {
+      const out = {};
+      for (const [p, tiers] of Object.entries(value)) {
+        if (!OVERLAY_PROVIDERS.has(p) || !tiers || typeof tiers !== 'object' || Array.isArray(tiers)) continue;
+        const t = {};
+        for (const tier of ['fast', 'smart']) {
+          if (typeof tiers[tier] === 'string') t[tier] = tiers[tier].trim().slice(0, 200);
+        }
+        if (Object.keys(t).length) out[p] = t;
+      }
+      if (Object.keys(out).length) clean.models = out;
+    }
     else if (key === 'apiKeys' && value && typeof value === 'object') {
       clean.apiKeys = {};
-      for (const k of ['typesafe', 'gemini', 'anthropic', 'openai', 'nvidia']) if (typeof value[k] === 'string' && value[k].length <= 4096) clean.apiKeys[k] = value[k].trim();
+      // Every provider row the gear renders (typesafe is the standalone
+      // build's; the other nine are the personal build's).
+      for (const k of ['typesafe', ...OVERLAY_PROVIDERS]) if (typeof value[k] === 'string' && value[k].length <= 4096) clean.apiKeys[k] = value[k].trim();
     }
   }
   return clean;
@@ -1657,6 +1677,17 @@ function noteSettingsSave() {
 }
 function applySettingsPatch(patch) {
   sttDisabled = false;
+  // A tier cleared to empty comes back as the shipping default (none exists
+  // for opencode and custom, which stay unset by design).
+  if (patch && patch.models && typeof patch.models === 'object') {
+    for (const p of Object.keys(patch.models)) {
+      for (const tier of ['fast', 'smart']) {
+        if (patch.models[p] && typeof patch.models[p] === 'object' && tier in patch.models[p] && !String(patch.models[p][tier]).trim()) {
+          patch.models[p][tier] = store.defaultModel(p, tier);
+        }
+      }
+    }
+  }
   const s = store.setSettings(patch);
   noteSettingsSave();
   // The voice switch: the renderer must know at once whether to use it.
@@ -1731,6 +1762,16 @@ function registerIpc() {
     if (hooks.showDesktop) hooks.showDesktop();
     if (hooks.startDesktopTour) hooks.startDesktopTour();
     return { ok: true };
+  });
+  // The gear's Fast/Smart pickers: ask the provider's /models endpoint what
+  // the saved key can reach. Kept distinct from the desktop's own handler.
+  companionIpc.handle('companion:ai:models', async (_e, payload) => {
+    const provider = payload && OVERLAY_PROVIDERS.has(payload.provider) ? payload.provider : null;
+    if (!provider) return { ok: false, error: 'Unknown provider.' };
+    const s = store.getSettings();
+    const key = (s.apiKeys || {})[provider] || '';
+    const baseUrl = String((payload && payload.baseUrl) != null ? payload.baseUrl : (s.customBaseUrl || '')).trim();
+    return listModels(provider, { apiKey: key, baseUrl });
   });
   companionIpc.handle('companion:ai:ready', () => {
     const settings = store.getSettings();
@@ -4072,7 +4113,7 @@ async function pttStop(reason) {
   if (pcm.length < PTT_MIN_BYTES || rms16(pcm) < RMS_GATE) { flash(PTT_MISSED, 3000); restoreKnotState(); return; }
   const settings = store.getSettings();
   const stt = createSTT(settings);
-  if (!stt.available) { flash(STANDALONE ? 'Add a Gemini key in Settings, or reinstall to restore the local speech model.' : 'No transcription yet. Run voice setup in the desktop app, or add a Gemini key.', 5000); restoreKnotState(); return; }
+  if (!stt.available) { flash(STANDALONE ? 'Add a Gemini key in Settings, or reinstall to restore the local speech model.' : 'No transcription yet. In the desktop app: Settings > Voice, then Set up voice. Or add a Gemini key.', 5000); restoreKnotState(); return; }
   sayNeutral(null, keyUpAt);
   let res = null;
   const t0 = Date.now();

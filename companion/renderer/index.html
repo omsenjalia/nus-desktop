@@ -203,8 +203,10 @@
           <div class="s-field"><span>Custom key</span><input id="key-custom" type="password" placeholder="optional for a local endpoint" autocomplete="off" /></div>
           <div class="s-field"><span>Custom base URL</span><input id="custom-base-url" type="text" placeholder="https://host/v1" autocomplete="off" spellcheck="false" /></div>
           <label class="s-label">Models <span class="s-hint">fast = Smart off · smart = Smart on</span></label>
-          <div class="s-field"><span>Fast</span><input id="model-fast" type="text" autocomplete="off" /></div>
-          <div class="s-field"><span>Smart</span><input id="model-smart" type="text" autocomplete="off" /></div>
+          <div class="s-field"><span>Fast</span><input id="model-fast" type="text" list="model-options" autocomplete="off" spellcheck="false" /></div>
+          <div class="s-field"><span>Smart</span><input id="model-smart" type="text" list="model-options" autocomplete="off" spellcheck="false" /></div>
+          <datalist id="model-options"></datalist>
+          <div class="s-resume-actions"><span class="s-hint" id="models-hint">Listed live from the provider's /models endpoint.</span><button id="models-refresh" type="button">Find models</button></div>
         </details>
 
         <details class="s-more">

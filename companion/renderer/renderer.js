@@ -1107,11 +1107,38 @@
     $('#report-to-nus').checked = !!settings.reportToNus;
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
     $('#model-fast').value = m.fast; $('#model-smart').value = m.smart;
+    refreshModels(false);
     syncAssistShortcutLabels();
     $('#s-status').textContent = statusText();
     refreshPackStatus();
     refreshJarvisContext();
   }
+
+  // Ask the provider's /models endpoint what the saved key can reach, and
+  // offer the answer on both model fields. Failures say why and keep the
+  // saved IDs; nothing is cleared.
+  let lastModelsKey = '', lastModelsAt = 0;
+  async function refreshModels(force) {
+    const hint = $('#models-hint');
+    const button = $('#models-refresh');
+    const baseUrl = ($('#custom-base-url')?.value || settings.customBaseUrl || '').trim();
+    const cacheKey = settings.provider + '|' + (settings.provider === 'custom' ? baseUrl : '');
+    if (!force && cacheKey === lastModelsKey && Date.now() - lastModelsAt < 5 * 60 * 1000) return;
+    lastModelsKey = cacheKey; lastModelsAt = Date.now();
+    if (hint) hint.textContent = 'Asking ' + settings.provider + ' for its model list…';
+    if (button) button.disabled = true;
+    let res = null;
+    try { res = await nus.aiModels(settings.provider, settings.provider === 'custom' ? baseUrl : undefined); } catch (e) { res = { ok: false, error: String((e && e.message) || e) }; }
+    if (button) button.disabled = false;
+    const datalist = $('#model-options');
+    if (datalist && res && res.ok) {
+      datalist.innerHTML = res.models.map(function (m) { return '<option value="' + String(m.id).replace(/"/g, '&quot;') + '"></option>'; }).join('');
+      if (hint) hint.textContent = res.models.length + ' models for ' + settings.provider + '. Type one, or pick from the list.';
+    } else if (hint) {
+      hint.textContent = (res && res.error) || 'Could not list models. Type the ID you want.';
+    }
+  }
+  $('#models-refresh').addEventListener('click', function () { refreshModels(true); });
 
   async function refreshJarvisContext() {
     if (standalone) return;
@@ -1174,6 +1201,7 @@
     const m = settings.models[settings.provider] || { fast: '', smart: '' };
     $('#model-fast').value = m.fast; $('#model-smart').value = m.smart;
     $('#s-status').textContent = statusText();
+    refreshModels(true);
   }));
   async function saveSettings() {
     settings.apiKeys.typesafe = $('#key-typesafe').value.trim();
@@ -3620,6 +3648,7 @@ function createPreviewBridge() {
     guideAsk: () => {}, guideDismiss: () => {}, guideKeep: () => {}, guideSkip: () => {}, strandArrived: () => {},
     knotCornerSet: async () => true,
     getZoomLevel: () => 0,
+    aiModels: async () => ({ ok: true, models: [{ id: 'gemini-2.0-flash' }, { id: 'gemini-2.5-pro' }] }),
     on: (channel, callback) => listeners.set(channel, callback),
   };
 }

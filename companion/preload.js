@@ -18,6 +18,8 @@ contextBridge.exposeInMainWorld('nus', {
   captureState: () => ipcRenderer.invoke('companion:capture:state'),
   packStatus: () => ipcRenderer.invoke('companion:pack:status'),
   aiReady: () => ipcRenderer.invoke('companion:ai:ready'),
+  // The gear's Fast/Smart pickers ask the provider's /models endpoint.
+  aiModels: (provider, baseUrl) => ipcRenderer.invoke('companion:ai:models', { provider, baseUrl }),
   desktopTour: () => ipcRenderer.invoke('companion:desktop:tour'),
   nusContextStatus: () => ipcRenderer.invoke('companion:nus-context:status'),
   sparReset: () => ipcRenderer.invoke('companion:spar:reset'),
