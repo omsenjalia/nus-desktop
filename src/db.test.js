@@ -139,3 +139,21 @@ test('legacy raw_text is migrated and scrubbed from both SQLite snapshots', asyn
   assert.equal(fs.readFileSync(path.join(dir, 'nus.db')).includes(Buffer.from(marker)), false);
   assert.equal(fs.readFileSync(path.join(dir, 'nus.db.bak')).includes(Buffer.from(marker)), false);
 });
+
+test('companion transcripts delete wholesale, and by age when asked', () => {
+  const sessionId = api.addCompanionSession({ started_at: '2020-01-01T00:00:00.000Z', pack: 'test' });
+  api.addCompanionMessage(sessionId, { ts: '2020-01-01T00:01:00.000Z', channel: 'you', text: 'old question' });
+  const freshId = api.addCompanionSession({ started_at: new Date().toISOString(), pack: 'test' });
+  api.addCompanionMessage(freshId, { ts: new Date().toISOString(), channel: 'you', text: 'fresh question' });
+
+  // Older-than cutoff removes only the old message; sessions stay put.
+  const aged = api.deleteCompanionTranscripts('2021-01-01T00:00:00.000Z');
+  assert.equal(aged.messages, 1);
+  assert.equal(api.listCompanionMessages(sessionId).length, 0);
+  assert.equal(api.listCompanionMessages(freshId).length, 1);
+
+  // Wholesale clear removes everything including sessions.
+  const all = api.deleteCompanionTranscripts();
+  assert.ok(all.messages >= 1);
+  assert.equal(api.listCompanionSessions().length, 0);
+});

@@ -703,3 +703,17 @@ body.ready .workspace { opacity: 1; transform: none; }
 .voice-status-value { font-weight: 700; }
 .voice-status-value.ok { color: #1b6e57; }
 .voice-status-value.missing { color: #a4440c; }
+
+/* Settings, calmer: grouped nav, switch rows, and honest file status. */
+.settings-nav-links { display: grid; gap: 4px; margin-top: 4px; }
+.pref-rows { display: grid; gap: 10px; margin-top: 14px; max-width: 520px; }
+.pref-row { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 11px 13px; border: 1px solid var(--line); border-radius: 10px; background: var(--paper-2); cursor: pointer; }
+.pref-text { display: grid; gap: 2px; }
+.pref-text strong { font-size: 10px; color: var(--ink); }
+.pref-text small { color: var(--muted); font-size: 8.5px; line-height: 1.45; }
+.pref-row select.quiet-button { flex: none; }
+.settings-file-path { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 9px; background: var(--paper-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; margin-top: 10px; user-select: all; word-break: break-all; color: var(--ink); max-width: 520px; }
+.danger-card { border-color: rgba(178,58,46,.4); }
+.danger-button { flex: none; padding: 9px 14px; border-radius: 10px; border: 1px solid rgba(178,58,46,.55); background: transparent; color: #b23a2e; font-weight: 700; cursor: pointer; }
+.danger-button:hover { background: rgba(178,58,46,.08); }
+.danger-badge { color: #b23a2e; background: rgba(178,58,46,.1); }

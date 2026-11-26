@@ -215,7 +215,9 @@ test('the CLI runs a pinned model, not the user most expensive default', () => {
   // Settings; unset it is the mid-tier default, never the account default.
   assert.match(aiJs, /'--model', activeModel\(\)/, 'the spawn pins the model');
   assert.match(aiJs, /const MODEL = 'claude-sonnet-5'/, 'and the pinned default is the mid-tier one');
-  assert.match(aiJs, /function activeModel\(\) \{ return modelOverride \|\| process\.env\.NUS_AI_MODEL \|\| MODEL; \}/, 'an unset override resolves to the pinned default');
+  // An unset override resolves to the pinned default; the per-provider Settings
+  // pick (claude-code / anthropic) can move it, and nothing else can.
+  assert.match(aiJs, /function activeModel\(\) \{ return modelOverride \|\| desktopModelFor\('claude-code'\) \|\| desktopModelFor\('anthropic'\) \|\| process\.env\.NUS_AI_MODEL \|\| MODEL; \}/, 'an unset override resolves to the pinned default');
   assert.match(aiJs, /cli_spend_limit/, 'a spend cap is reported as its own fixable case');
 });
 

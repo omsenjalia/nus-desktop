@@ -7,6 +7,34 @@ do it.
 There is no server and no account, so nothing here asks for a Supabase or
 Stripe credential: those were removed with the commercial layer.
 
+## Where settings live
+
+Every preference and every API key — desktop AI provider, model, grading scale,
+theme, Companion settings, keys for Anthropic/Gemini/Groq/OpenAI/OpenRouter/
+Nvidia/opencode/Ollama/custom — lives in one file:
+
+```
+<userData>/settings.json    # e.g. %APPDATA%\jarvis\settings.json on Windows
+```
+
+The file is safeStorage-encrypted when the OS keychain is available (mode 0600,
+`{ encrypted: true, payload }`) and plain JSON with mode 0600 otherwise. Writes
+go through a temporary file plus rename, so a crash mid-write never truncates
+settings. The file is re-read at every boot and moves
+with a copy of the data folder: an update never resets it. On first launch
+after the consolidation, the SQLite `preferences` table and the old
+`userData/secrets/*.enc` / `companion-settings.json` are folded in; the old
+files are left in place as backups. A copy can be exported from
+**Settings > Data > Settings file** for backup or migration. The exported copy
+is the raw file: it stays keychain-encrypted on machines that had keychain
+encryption, so it is restorable on the same machine (drop it back into
+userData) but not on a different one; on a new machine the person re-enters
+keys, which is one paste per provider. The full-erase button in the same
+place (**Settings > Data > Danger zone**) removes the database, the settings
+file, secrets, the bridge snapshot and companion audio, then relaunches
+into a blank install. Voice models under userData are kept; they are public
+downloads, not personal data.
+
 ## 1. Verify
 
 ```
@@ -24,10 +52,14 @@ Two ways, and on a PC the second is the one to trust.
 **Locally, with the toolchain:**
 
 ```
-npm run setup:voice        # whisper binaries; once per machine, Windows only
 npm run dist               # makes vendor/voice-lines, then packs
 node scripts/package-security-check.js
 ```
+
+Voice needs no machine setup step: the whisper engine and model install from
+**Settings > Voice > Set up voice** inside the app. `npm run setup:voice`
+still exists for release machines that want the binaries pre-seeded, but it is
+not required and the app repairs a missing engine itself.
 
 `npm run dist` reads `electron-builder.config.js` and produces
 `dist/JARVIS-Setup.exe`, `dist/JARVIS-Portable.exe`,

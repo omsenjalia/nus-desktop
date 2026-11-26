@@ -1,17 +1,15 @@
-// Simple JSON-file settings store (avoids native modules so `npm install` stays clean).
-// Settings hold API keys and the user's résumé, so the file is encrypted at rest
-// with the OS keychain (DPAPI on Windows, Keychain on macOS) via safeStorage.
-// Falls back to plaintext only where no system encryption exists (some Linux).
+// Companion settings live in the one shared settings file now:
+// userData/settings.json, the same file the desktop app uses. This module only
+// re-homes the companion's keys under a "companion" prefix there and keeps the
+// callers' API stable. Old companion-settings.json is folded in on first load.
 const fs = require('fs');
 const path = require('path');
 const { app, safeStorage } = require('electron');
 
-// Companion settings now live under the desktop app's userData folder.
-// The standalone app kept them in %APPDATA%\jarvis-copilot; the first load
-// migrates that file here (decrypt + re-encrypt is transparent because DPAPI
-// keys are per-user, not per-app). The old file is left in place untouched.
 const FILE = path.join(app.getPath('userData'), 'companion-settings.json');
 const LEGACY_FILE = path.join(app.getPath('appData'), 'jarvis-copilot', 'jarvis-copilot-data.json');
+const settingsFile = require('../../src/settings-file');
+const COMPANION_NAMESPACE = 'companion';
 
 const DEFAULTS = {
   provider: 'gemini',
@@ -214,17 +212,59 @@ function retireDeadModels(settings) {
   return changed;
 }
 
+// The shared store is the source of truth. The old companion-specific file is
+// merged in on first access, once, and then left alone (readable copy, never
+// written again by this build).
+function shared() { settingsFile.init({ userDataDir: app.getPath('userData') }); return settingsFile; }
+
 let data = null;
 let standalone = false;
+let foldedLegacy = false;
+function foldLegacyOnce() {
+  if (foldedLegacy) return;
+  foldedLegacy = true;
+  // The old companion file: decrypt if needed, fold into the shared file,
+  // leave the original on disk as a backup.
+  try {
+    if (fs.existsSync(FILE)) {
+      const { parsed } = readSettingsFile(FILE);
+      foldCompanion(parsed);
+      return;
+    }
+  } catch (e) {
+    console.log('[companion] could not fold old settings into the shared file (' + reason(e) + '); starting from defaults');
+  }
+  // And the truly ancient standalone file, only in standalone mode.
+  try {
+    if (standalone && fs.existsSync(LEGACY_FILE)) {
+      const { parsed } = readSettingsFile(LEGACY_FILE);
+      foldCompanion(parsed);
+      migrationNote = 'Your standalone Companion settings were carried into the shared settings file.';
+    }
+  } catch (e) {
+    console.log('[companion] settings migration failed:', e.message);
+    if (fs.existsSync(LEGACY_FILE)) migrationNote = 'Re-enter your API key: settings could not be carried over from the standalone Companion.';
+  }
+}
+function foldCompanion(parsed) {
+  if (!parsed || typeof parsed !== 'object') return;
+  const current = shared().getPreferences();
+  const existing = current[COMPANION_NAMESPACE];
+  const merged = deepMerge(deepMerge(DEFAULTS, existing && typeof existing === 'object' ? existing : {}), parsed);
+  shared().setPreference(COMPANION_NAMESPACE, merged);
+  console.log('[companion] settings now live in the shared settings file');
+}
+function loadShared() {
+  foldLegacyOnce();
+  const all = shared().getPreferences();
+  const ns = all[COMPANION_NAMESPACE];
+  return deepMerge(DEFAULTS, ns && typeof ns === 'object' ? ns : {});
+}
 // What happened to the file in this run. Live 2026-11-03: a switch was logged, the
 // file never changed and Hands behaved as off, with nothing to say why, because
 // both the read and the write swallowed their errors.
-let readState = 'new';      // ok, new (no file yet) or failed
-let readError = '';
 let saveError = '';
-let unreadableKept = false;
 let savedOnce = false;
-let plainNoted = false;
 // A parse error quotes the text it choked on, and this file holds API keys.
 function reason(e) { return e instanceof SyntaxError ? 'not valid JSON' : String((e && e.message) || e); }
 
@@ -277,40 +317,7 @@ let migrationNote = '';
 
 function load() {
   if (data) return data;
-  let legacyPlaintext = false;
-  let migrated = false;
-  try {
-    if (!standalone && !fs.existsSync(FILE) && fs.existsSync(LEGACY_FILE)) {
-      const legacy = readSettingsFile(LEGACY_FILE);
-      data = deepMerge(DEFAULTS, legacy.parsed);
-      migrated = true;
-    }
-  } catch (e) {
-    // The old standalone file was encrypted with that app's own key, which this
-    // process cannot open. Non-secret settings are lost with it, but pack paths
-    // re-discover from the vault below and the user just re-pastes API keys once.
-    console.log('[companion] settings migration failed, starting fresh:', e.message);
-    if (fs.existsSync(LEGACY_FILE)) migrationNote = 'Re-enter your API key: settings could not be carried over from the standalone Companion.';
-  }
-  if (!migrated) try {
-    const raw = JSON.parse(fs.readFileSync(FILE, 'utf8'));
-    if (raw && raw.encrypted && typeof raw.payload === 'string') {
-      const plain = safeStorage.decryptString(Buffer.from(raw.payload, 'base64'));
-      data = deepMerge(DEFAULTS, JSON.parse(plain));
-    } else {
-      data = deepMerge(DEFAULTS, raw); // legacy plaintext file
-      legacyPlaintext = true;
-    }
-    readState = 'ok';
-  }
-  catch (e) {
-    data = deepMerge(DEFAULTS, {});
-    if (!e || e.code !== 'ENOENT') {
-      readState = 'failed';
-      readError = reason(e);
-      console.log('[settings] could not read ' + FILE + ': ' + readError + '. This run uses the defaults.');
-    }
-  }
+  data = loadShared();
 
   // First run: point at the vault's most recently built briefing so the app is
   // useful before anything is typed into Settings in the desktop build.
@@ -319,13 +326,9 @@ function load() {
     if (found) { data.packPath = found.pack; data.sparPath = found.spar; }
   }
 
-  // We don't save() here so we don't spam disk, it will persist on next save.
   pickKeyedProvider(data);
 
-  const retired = retireDeadModels(data);
-
-  // re-encrypt at rest under the new path, or persist a model retirement
-  if (legacyPlaintext || migrated || retired) save();
+  if (retireDeadModels(data)) save();
   return data;
 }
 // Auto-switch provider if the current one has no key, but another one does.
@@ -336,41 +339,22 @@ function pickKeyedProvider(d) {
   const active = validProviders.find(p => d.apiKeys[p]);
   if (active) d.provider = active;
 }
-// A file that exists but could not be read may hold API keys this run knows nothing
-// about, and what is in memory is only the defaults: copy it aside before writing
-// over it. If the copy fails, save stops there and the file stays as it was.
-function keepUnreadable() {
-  if (unreadableKept || readState !== 'failed') return;
-  if (fs.existsSync(FILE)) {
-    const copy = FILE + '.unreadable-' + Date.now();
-    fs.copyFileSync(FILE, copy);
-    console.log('[settings] kept the file that could not be read as ' + copy);
-  }
-  unreadableKept = true;
-}
 function save() {
   try {
-    keepUnreadable();
-    const json = JSON.stringify(data, null, 2);
-    if (safeStorage.isEncryptionAvailable()) {
-      const payload = safeStorage.encryptString(json).toString('base64');
-      fs.writeFileSync(FILE, JSON.stringify({ encrypted: true, payload }), { mode: 0o600 });
-    } else {
-      if (!plainNoted) { plainNoted = true; console.log('[settings] encryption is not available: saving as plain text'); }
-      fs.writeFileSync(FILE, json, { mode: 0o600 });
-    }
+    shared().setPreference(COMPANION_NAMESPACE, data);
     saveError = '';
-    if (!savedOnce) { savedOnce = true; console.log('[settings] saved ' + FILE); }
+    if (!savedOnce) { savedOnce = true; console.log('[settings] saved the shared settings file'); }
   } catch (e) {
     saveError = reason(e);
-    console.log('[settings] could not save ' + FILE + ': ' + saveError);
+    console.log('[settings] could not save the shared settings file: ' + saveError);
   }
 }
 // One line for the log at boot: which file, whether it was read, and the switches
 // a run's behaviour turns on. Never a key.
 function statusLine() {
   const s = load();
-  return 'settings: ' + FILE + ' read ' + readState + (readError ? ' (' + readError + ')' : '') + ', hands ' + (s.hands === true) + ', tasks ' + (s.tasks === true) + ', island ' + (s.knotIsland === true) + ', hide from capture ' + (s.hideFromCapture !== false);
+  const sharedStatus = shared().status();
+  return 'settings: shared file read ' + sharedStatus.read + (sharedStatus.error ? ' (' + sharedStatus.error + ')' : '') + ', hands ' + (s.hands === true) + ', tasks ' + (s.tasks === true) + ', island ' + (s.knotIsland === true) + ', hide from capture ' + (s.hideFromCapture !== false);
 }
 
 module.exports = {
