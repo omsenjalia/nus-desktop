@@ -234,3 +234,23 @@ test('a failed Fable fetch says why too, and how big the file that failed was', 
   assert.ok(asset, 'the model declares the size it expects');
   assert.equal(declared, Number(asset[1]), 'the workflow checks the size the app checks');
 });
+
+test('the voice guard looks where the app looks, inside the archive folder', () => {
+  // The archive keeps its top-level folder, and the app wants it that way:
+  // modelDir() is resources/voice/<folder> and hasModel() asks that folder for
+  // voices.bin and a .onnx. A guard that checked vendor/voice/voices.bin failed
+  // a complete, correct 334 MB download, because the files were one level down
+  // in the place the app actually reads.
+  const voice = read('companion/src/voice/index.js');
+  const folder = workflow.match(/^ {2}FABLE_FOLDER: (\S+)$/m);
+  assert.ok(folder, 'the folder is named once, at the top');
+  const declared = voice.match(/kokoro-multi-lang-v1_0\.tar\.bz2[^}]*?folder: '([^']+)'/);
+  assert.ok(declared, 'the model declares its folder');
+  assert.equal(folder[1], declared[1], 'the workflow extracts to the folder the app reads');
+
+  const body = stepBody('Fetch the Fable voice model for the pre-built lines');
+  assert.match(body, /Join-Path \$root \$env:FABLE_FOLDER/, 'the guard is inside that folder');
+  assert.match(body, /voices\.bin/, 'and asks for the file hasModel() asks for');
+  assert.match(body, /model\.onnx/, 'and the second one');
+  assert.doesNotMatch(body, /Test-Path \(Join-Path \$root 'voices\.bin'\)/, 'not one level up');
+});

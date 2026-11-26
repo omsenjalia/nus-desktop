@@ -45,6 +45,12 @@ env:
   # hashes wrong, and "hash mismatch" alone does not say whether the network
   # truncated it or the pin is stale; the size says which.
   FABLE_BYTES: 349886476
+  # The folder inside the archive, which is also the folder the app reads:
+  # companion/src/voice/index.js looks for resources/voice/<folder>/voices.bin,
+  # and electron-builder copies vendor/voice to resources/voice (src/ci-windows
+  # .test.js holds both halves of that). The archive is extracted as it comes, so
+  # this name is the layout, not a choice.
+  FABLE_FOLDER: kokoro-multi-lang-v1_0
 
 jobs:
   build:
@@ -233,7 +239,17 @@ jobs:
               throw "voice archive hash $got is not $want (removed the bad archive; re-run)"
             }
             & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $root
-            if (-not (Test-Path (Join-Path $root 'voices.bin'))) { Get-ChildItem -Recurse $root | Out-String | Write-Host; throw 'the voice files did not land in vendor/voice' }
+            # Inside the folder, not beside it. The archive keeps its top-level
+            # directories and the app wants them: modelDir() is
+            # resources/voice/<folder>, and hasModel() then asks that folder for
+            # voices.bin and a .onnx. A guard that looked one level up failed a
+            # perfect 334 MB download for being in the right place.
+            $model = Join-Path $root $env:FABLE_FOLDER
+            $missing = @('voices.bin', 'model.onnx') | Where-Object { -not (Test-Path (Join-Path $model $_)) }
+            if ($missing) {
+              Get-ChildItem -Recurse $root | Select-Object -First 40 FullName | Out-String | Write-Host
+              throw "the voice files did not land in vendor/voice/$env:FABLE_FOLDER (missing: $($missing -join ', '))"
+            }
           } catch {
             $size = if (Test-Path $archive) { "$((Get-Item $archive).Length) bytes" } else { 'no file' }
             $msg = "$($_.Exception.Message) [archive: $size, expected $env:FABLE_BYTES]"
