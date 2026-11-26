@@ -109,6 +109,11 @@ test('modes: off without a key, off unless asked for, and pick never throws', as
   assert.equal(miss.accept, false);
   assert.equal(miss.reason, 'jev unavailable');
 
+  // A hung Jev call: the promise below never settles, and the deadline is what
+  // ends the wait. This used to fail the whole run (not the assertion) because
+  // pick() unref'd its own deadline timer: with nothing else on the loop, node
+  // exited before the timer fired and the await hung forever. Fixed in
+  // src/guide/fastpoint.js; this line is the regression test for it.
   const slow = createFastPointer({ jev: { ready: () => true, systemOne: () => new Promise(() => {}) }, mode: '1', deadlineMs: 30 });
   const late = await slow.pick(INPUT);
   assert.equal(late.accept, false, 'a hung Jev call is cut off, never awaited');

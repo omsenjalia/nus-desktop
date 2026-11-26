@@ -32,6 +32,16 @@ on:
 permissions:
   contents: read
 
+# Everything that is expensive and does not change between runs, named once.
+# A key change here invalidates that cache; nothing else does.
+#
+# The Fable archive is pinned by a full SHA-256 (see the fetch step), which is
+# what makes it safe to cache by that pin alone: a cached archive that did not
+# match the pin could never have been stored.
+env:
+  FABLE_ARCHIVE: kokoro-multi-lang-v1_0.tar.bz2
+  FABLE_PIN: 60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4
+
 jobs:
   build:
     runs-on: windows-latest
@@ -45,8 +55,31 @@ jobs:
           node-version: 22
           cache: npm
 
+      # electron and electron-builder keep their downloads in %LOCALAPPDATA%,
+      # not in node_modules. Without these two caches a cold run re-downloads
+      # the Electron binary (~100 MB) and the builder's toolchain (~50 MB) every
+      # single time, which is most of what makes a package build feel slow.
+      - name: Cache the Electron binary and the builder toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/builder-cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+        env:
+          # Read by electron's install script and by app-builder-lib
+          # (binDownload.js). Pointing both at runner.temp keeps them off the
+          # default profile path, so one cache action can carry both.
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/builder-cache
+
       - name: Install dependencies
         run: npm ci
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/builder-cache
 
       # src/config.js is gitignored and required at startup, so a clean checkout
       # has nothing for src/main.js to require. This build has no server and no
@@ -69,34 +102,80 @@ jobs:
       - name: Test
         run: npm test
 
+      # ~65 MB of whisper.cpp plus the base model, from two hosts that are not
+      # npm. Cached by the tag the script pins, so a new pin fetches again.
+      - name: Cache the whisper binary and model
+        uses: actions/cache@v4
+        with:
+          path: vendor/whisper
+          key: whisper-b4938-x64-${{ runner.os }}
+          # No restore-keys: a partial whisper directory is a broken one, and
+          # setup:voice treats a stale binary as done (findExe succeeds).
+
       - name: Fetch the whisper binary the Windows build bundles
         run: npm run setup:voice
+
+      # The pre-made voice lines are the slowest thing in this build: a few
+      # hundred short WAVs, synthesized one at a time on the runner's CPU. That
+      # is pure work, and it only changes when a line changes, so the finished
+      # folder is cached against the source files that define the lines.
+      #
+      # Both caches below share the FABLE_PIN key: the model and the lines made
+      # from it always travel together, so they cannot be half-restored into a
+      # mismatch.
+      - name: Cache the built voice lines
+        id: lines-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/voice-lines
+          key: voice-lines-${{ env.FABLE_PIN }}-${{ hashFiles('companion/src/voice/lines.js', 'companion/src/tour.js', 'companion/src/voice/index.js') }}
 
       # `npm run dist` begins with make-voice-lines.js, which needs the Fable
       # model in vendor/voice. vendor/ is gitignored (the model is ~300 MB), and
       # nothing in the repo downloads it into the tree, so this step is not
       # boilerplate: without it the build stops at line one of the script.
       #
-      # It is also the one step expected to need attention, and the honest
-      # reason is that this workflow has never been run. The model is fetched
-      # with the same pinned SHA-256 that the app checks at install time, so a
-      # wrong URL fails loudly here instead of shipping a broken build.
+      # The archive is cached by its own pin, and the hash check below still
+      # runs on every build: a cache hit is a shortcut for the download, never a
+      # substitute for the verification.
+      - name: Cache the Fable voice archive
+        id: fable-cache
+        uses: actions/cache@v4
+        with:
+          path: vendor/voice-archive
+          key: fable-${{ env.FABLE_PIN }}
+
       - name: Fetch the Fable voice model for the pre-built lines
         shell: pwsh
+        env:
+          # A cold cache downloads; a hit unpacks a cached archive. Either way
+          # the hash is checked before anything is unpacked.
+          ARCHIVE_DIR: vendor\voice-archive
         run: |
           $url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2'
           $root = Join-Path $env:GITHUB_WORKSPACE 'vendor\voice'
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-          $archive = Join-Path $root 'kokoro-multi-lang-v1_0.tar.bz2'
-          Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
+          $keep = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR
+          New-Item -ItemType Directory -Force -Path $root, $keep | Out-Null
+          $archive = Join-Path $keep $env:FABLE_ARCHIVE
+          if (-not (Test-Path $archive)) {
+            Write-Host 'Fable archive not cached; downloading.'
+            Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
+          } else {
+            Write-Host 'Fable archive restored from cache; verifying it anyway.'
+          }
           # The whole pin from companion/src/voice/index.js, not a prefix: the
           # app refuses a model that does not match this hash, so the build must
           # refuse the same one rather than shipping it and failing at run time.
-          $want = '60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4'
+          $want = $env:FABLE_PIN
           $got = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
-          if ($got -ne $want) { throw "voice archive hash $got is not $want" }
+          if ($got -ne $want) {
+            # A cached archive that fails its pin is worse than no cache: it
+            # would fail every later run too. Drop it and let the next run
+            # download cleanly.
+            Remove-Item $archive -Force
+            throw "voice archive hash $got is not $want (removed the bad archive; re-run)"
+          }
           & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $root
-          Remove-Item $archive
           if (-not (Test-Path (Join-Path $root 'voices.bin'))) { Get-ChildItem -Recurse $root | Out-String | Write-Host; throw 'the voice files did not land in vendor/voice' }
 
       # `npm run dist` makes the fixed lines as its first act, so there is no

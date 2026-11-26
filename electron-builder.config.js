@@ -70,6 +70,18 @@ const config = {
   // acquisition token. Windows registers it at runtime (src/protocol.js);
   // macOS only honours CFBundleURLTypes in Info.plist, which this produces.
   protocols: [{ name: 'JARVIS', schemes: ['jarvis'] }],
+  // The two voice workers are spawned as separate processes
+  // (companion/src/voice/index.js and parakeet.js: process.execPath with
+  // ELECTRON_RUN_AS_NODE), and each of them does require('sherpa-onnx-node').
+  // That is plain node, so it has no asar support and cannot read a file inside
+  // app.asar; the native .node addon also cannot be loaded from an archive. Left
+  // packed, the app starts fine and then cannot speak. They ship unpacked.
+  asarUnpack: [
+    'companion/src/voice/parakeet-worker.js',
+    'companion/src/voice/engine-worker.js',
+    '**/node_modules/sherpa-onnx-node/**',
+    '**/node_modules/sherpa-onnx-*/**',
+  ],
   afterPack: adHocSignMac,
   win: {
     target: [

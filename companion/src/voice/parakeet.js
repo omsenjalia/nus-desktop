@@ -183,8 +183,11 @@ function createParakeet({ userData, root, settings, log = () => {}, spawnFn = sp
     const w = worker;
     touch();
     return new Promise((resolve, reject) => {
+      // Not unref'd, for the reason spelled out in guide/fastpoint.js: a
+      // watchdog is the only thing that can settle this promise, so letting the
+      // loop drop it means the promise never settles at all. A decode is only
+      // in flight while someone is talking, so the ref costs nothing real.
       const hung = setTimeout(() => { log('decode stuck, restarting'); close(); }, hungMs);
-      if (hung.unref) hung.unref();
       decoding = { id, resolve, reject, hung };
       try { w.send({ type: 'decode', id, pcm }); } catch (e) { finishDecode(); reject(e); }
     });
