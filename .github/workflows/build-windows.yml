@@ -10,6 +10,16 @@
 # A release is public the moment it exists, so that step stays a human command
 # (docs/release.md).
 #
+# Two artifacts, because the two installers are two different downloads:
+#   jarvis-setup     JARVIS-Setup.exe, its blockmap and latest.yml — the files a
+#                    release needs, including the ones the in-app updater reads
+#                    (src/updater.js: it downloads changed blocks, not the file)
+#   jarvis-portable  JARVIS-Portable.exe on its own
+# `bundle_voice=false` builds both without the 334 MB voice model, for
+# iterating on code: 129 MB instead of 461 MB. The app downloads the voice on
+# first run. Those artifacts are named -no-voice so a light build cannot be
+# mistaken for one to publish.
+#
 # Repository secrets, set once. None are required for the build to succeed: the
 # app is usable with only an AI key pasted in Settings, and an empty value is
 # written as an empty string, which src/config.js reports as "not configured".
@@ -28,6 +38,16 @@ on:
         description: 'Build and smoke-test, skip the installers'
         type: boolean
         default: false
+      # The Fable voice model is 334 MB of the ~460 MB installer, and it changes
+      # about once a year. Off is the build for iterating on a code change: the
+      # installer drops to about a quarter (129 MB against 461 MB) and the app
+      # downloads the model on first run, through the repair path
+      # companion/src/voice/index.js install() already had. On is every build a
+      # person installs, and it stays the default.
+      bundle_voice:
+        description: 'Bundle the 334 MB voice model (off = small build, app downloads it)'
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -263,6 +283,10 @@ jobs:
       # when they are supposed to be there.
       - name: Build installer and portable exe
         if: ${{ !inputs.smoke_only }}
+        env:
+          # Read by electron-builder.config.js. Off leaves the model out of
+          # extraResources, which is the whole of the size difference.
+          NUS_SKIP_VOICE_BUNDLE: ${{ inputs.bundle_voice == false && '1' || '0' }}
         run: npm run dist -- --publish never
 
       - name: Check the voice lines were made
@@ -342,14 +366,31 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+      # Two artifacts, not one. This job used to upload both installers as a
+      # single 900 MB download, which is a bad trade for the common case: you
+      # want to install, not to also carry the portable exe you will not run.
+      #
+      # `jarvis-setup` carries the three files an update needs — the installer,
+      # its blockmap and latest.yml — so that attaching the artifact to a release
+      # is the whole publish step. electron-updater reads the feed, and the
+      # blockmap is what makes an update a few megabytes instead of another
+      # 460 MB: it fetches the blocks that changed (src/updater.js).
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.smoke_only }}
         with:
-          name: jarvis-windows
+          name: jarvis-setup${{ inputs.bundle_voice == false && '-no-voice' || '' }}
           path: |
             dist/JARVIS-Setup.exe
-            dist/JARVIS-Portable.exe
             dist/JARVIS-Setup.exe.blockmap
             dist/latest.yml
+          if-no-files-found: error
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !inputs.smoke_only }}
+        with:
+          name: jarvis-portable${{ inputs.bundle_voice == false && '-no-voice' || '' }}
+          path: |
+            dist/JARVIS-Portable.exe
           if-no-files-found: error
           retention-days: 14

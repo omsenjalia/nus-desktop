@@ -89,11 +89,14 @@ before it uploads anything:
 
 ```
 gh workflow run build-windows
-gh run download -n jarvis-windows -D dist
+gh run download -n jarvis-setup -D dist
 ```
 
-The artifacts are `JARVIS-Setup.exe`, `JARVIS-Portable.exe` and `latest.yml`
-(what installed copies poll to update themselves). macOS has its own manual
+`jarvis-setup` is `JARVIS-Setup.exe` plus `latest.yml` and the blockmap that let
+an installed copy update itself with a few megabytes instead of the whole
+installer; `jarvis-portable` is `JARVIS-Portable.exe` on its own. A build for
+testing code can leave the 334 MB voice model out with
+`gh workflow run build-windows -f bundle_voice=false`. macOS has its own manual
 workflow, `build-mac`. Neither one publishes a release: that stays a command
 you run after you have launched the build yourself. The full sequence is in
 `docs/release.md`.

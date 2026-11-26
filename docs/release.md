@@ -43,7 +43,8 @@ It needs the Fable model in `vendor/voice` before it will start: the first thing
 ```
 gh workflow run build-windows
 gh run watch
-gh run download -n jarvis-windows -D dist
+gh run download -n jarvis-setup -D dist        # the installer + the update feed
+gh run download -n jarvis-portable -D dist     # only if you want the portable exe
 ```
 
 `.github/workflows/build-windows.yml` runs on `windows-latest`: it renders
@@ -51,6 +52,25 @@ gh run download -n jarvis-windows -D dist
 against its pinned hash, builds the installer and portable exe, scans the asar,
 and then **runs the packaged app with `--smoke`** before uploading the files. A
 build that cannot open a window and start the Companion is not uploaded.
+
+The two installers are two artifacts on purpose. One artifact holding both was a
+900 MB download whichever one you wanted; `jarvis-setup` is the installer plus
+the two files an update needs, and `jarvis-portable` is the portable exe alone.
+
+**Iterating on a code change.** The Fable voice model is 334 MB of the
+installer and changes about once a year, so a build for testing code does not
+need it:
+
+```
+gh workflow run build-windows -f bundle_voice=false
+```
+
+That leaves the model out of `extraResources` (`NUS_SKIP_VOICE_BUNDLE=1`
+locally) and the installers drop to about a quarter of the size (129 MB against 461 MB, measured 2026-11-26); the app downloads
+the voice on first run, which is the same repair path an install whose bundled
+copy is missing already uses. The artifacts are named `jarvis-setup-no-voice`
+and `jarvis-portable-no-voice` so a light build cannot be mistaken for a
+shippable one. Every build a person installs is made with the default.
 
 Smoke either build yourself with an isolated profile, so the real one is never
 touched:
@@ -74,9 +94,20 @@ gh release create v0.2.6 dist/JARVIS-Setup.exe dist/JARVIS-Portable.exe \
   dist/JARVIS-Setup.exe.blockmap dist/latest.yml --title "J.A.R.V.I.S 0.2.6"
 ```
 
-`latest.yml` is what installed copies poll (`src/updater.js`); without it the
-auto-update is silent. The portable exe cannot self-update (no install
-directory to write into) and is skipped by design.
+Four files, and all four matter. `latest.yml` is the feed every installed copy
+polls (`src/updater.js`); without it the auto-update is silent. The
+`.exe.blockmap` is what keeps an update small: electron-updater reads it and
+fetches only the 64 KB blocks that changed, so shipping a one-line fix does not
+mean asking everyone on a metered connection for another 460 MB. Without the
+blockmap the same feed still works and silently downloads the whole installer —
+the expensive path, with no error to tell you it happened.
+
+When an update is downloaded, the app says so in a popup: **Restart now**, or
+**Later**, and Later installs it the next time they quit. Nobody is restarted
+mid-session.
+
+The portable exe cannot self-update (no install directory to write into) and is
+skipped by design, as is the macOS build until it is notarized.
 
 Bump `version` in `package.json` before building. The version string is baked
 into the installer and the updater feed.

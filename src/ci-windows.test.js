@@ -51,10 +51,9 @@ test('the asar the scan reads is at the path electron-builder writes', () => {
   assert.notEqual(builder.asar, false, 'the build must produce an asar for the scan to mean anything');
 });
 
-test('every artifact the workflow uploads has a name the builder is configured to produce', () => {
-  const block = workflow.slice(workflow.indexOf('name: jarvis-windows') - 400);
-  const uploaded = [...block.matchAll(/^\s+dist\/(\S+)\s*$/gm)].map((m) => m[1]);
-  assert.ok(uploaded.length >= 3, 'it uploads the installers: ' + uploaded.join(', '));
+test('every file the workflow uploads is one the builder produces', () => {
+  const uploaded = [...workflow.matchAll(/^\s+dist\/(\S+)\s*$/gm)].map((m) => m[1]);
+  assert.ok(uploaded.length >= 4, 'it uploads the installers: ' + uploaded.join(', '));
 
   const nsisName = builder.win.artifactName.replace('${ext}', 'exe');
   const portableName = builder.portable.artifactName.replace('${ext}', 'exe');
@@ -66,6 +65,53 @@ test('every artifact the workflow uploads has a name the builder is configured t
   // only one of them would be a silent change of what a download is.
   assert.ok(uploaded.includes(nsisName), 'the installer is uploaded');
   assert.ok(uploaded.includes(portableName), 'the portable exe is uploaded');
+});
+
+test('the installer and the portable exe are separate downloads', () => {
+  // One artifact holding both was a 900 MB download for either one of them.
+  // Splitting costs nothing and halves what a person waits for.
+  const artifacts = [...workflow.matchAll(/^\s+name: (jarvis-[a-z-]+)(\$\{\{[^}]*\}\})?$/gm)].map((m) => m[1]);
+  assert.deepEqual(artifacts.sort(), ['jarvis-portable', 'jarvis-setup'], 'two artifacts, one file each');
+
+  const setupBlock = workflow.slice(workflow.indexOf('name: jarvis-setup'));
+  const setupPaths = [...setupBlock.slice(0, setupBlock.indexOf('name: jarvis-portable')).matchAll(/^\s+dist\/(\S+)\s*$/gm)].map((m) => m[1]);
+  assert.ok(!setupPaths.includes('JARVIS-Portable.exe'), 'the setup artifact does not carry the portable exe');
+  const portableBlock = workflow.slice(workflow.indexOf('name: jarvis-portable'));
+  const portablePaths = [...portableBlock.matchAll(/^\s+dist\/(\S+)\s*$/gm)].map((m) => m[1]);
+  assert.deepEqual(portablePaths, ['JARVIS-Portable.exe'], 'the portable artifact is the portable exe and nothing else');
+});
+
+test('the updater feed travels with the installer', () => {
+  // src/updater.js reads latest.yml, and the blockmap is what turns a code
+  // change into a few megabytes instead of another 460 MB download. An
+  // artifact with the exe and not those two is a release where auto-update
+  // silently does nothing, or silently re-downloads everything.
+  const nsisName = builder.win.artifactName.replace('${ext}', 'exe');
+  const setupBlock = workflow.slice(workflow.indexOf('name: jarvis-setup'), workflow.indexOf('name: jarvis-portable'));
+  assert.match(setupBlock, new RegExp('dist/' + nsisName.replace('.', '\\.')));
+  assert.match(setupBlock, /dist\/JARVIS-Setup\.exe\.blockmap/, 'the blockmap is in the same artifact');
+  assert.match(setupBlock, /dist\/latest\.yml/, 'and the feed');
+  assert.match(builder.publish[0].provider, /^github$/, 'the feed the app polls is the GitHub release');
+});
+
+test('a small build is one input away, and it drops only the voice model', () => {
+  // 334 MB of the installer is the Fable model, which changes about once a
+  // year. Building without it is for iterating on code; every build a person
+  // installs still has it.
+  const inputs = workflow.slice(workflow.indexOf('workflow_dispatch:'), workflow.indexOf('permissions:'));
+  assert.match(inputs, /bundle_voice:/, 'the input exists');
+  assert.match(inputs, /default: true/, 'and the default is the full installer');
+
+  const buildStep = stepBody('Build installer and portable exe');
+  assert.match(buildStep, /NUS_SKIP_VOICE_BUNDLE: \$\{\{ inputs\.bundle_voice == false && '1' \|\| '0' \}\}/, 'the input reaches the builder');
+
+  const config = read('electron-builder.config.js');
+  assert.match(config, /process\.env\.NUS_SKIP_VOICE_BUNDLE === '1'/, 'and the builder reads it');
+
+  // Artifact names must not collide, or the light build overwrites the real
+  // one in the run list and someone ships it by accident.
+  assert.match(workflow, /name: jarvis-setup\$\{\{ inputs\.bundle_voice == false && '-no-voice'/, 'the light build is labelled');
+  assert.match(workflow, /name: jarvis-portable\$\{\{ inputs\.bundle_voice == false && '-no-voice'/, 'both of them');
 });
 
 test('the build actually launches what it ships', () => {
@@ -284,4 +330,20 @@ test('the asar scan reports what it found, not just that it failed', () => {
   assert.match(body, /-Tail 60/, 'the report is at the end of the output');
   assert.match(body, /exit \$code/, 'and the step still fails');
   assert.match(workflow, /name: asar-scan-output/, 'with the log attached as an artifact');
+});
+
+test('the docs name the artifacts the workflow actually uploads', () => {
+  // The README and the release guide both told people to fetch `jarvis-windows`
+  // for months while the job uploaded that. Renaming an artifact is the kind of
+  // change that silently breaks somebody's release script, so the one place the
+  // names are written down is checked against the place they are made.
+  for (const file of ['README.md', 'docs/release.md']) {
+    const doc = read(file);
+    assert.match(doc, /gh run download -n jarvis-setup/, file + ' fetches the installer artifact');
+    assert.doesNotMatch(doc, /jarvis-windows/, file + ' mentions an artifact that no longer exists');
+  }
+  // And the update path is written down where a release is made, not only here.
+  const release = read('docs/release.md');
+  assert.match(release, /blockmap/, 'the release guide says the blockmap is part of a release');
+  assert.match(release, /Restart now/, 'and that the app asks before restarting');
 });
