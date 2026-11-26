@@ -254,3 +254,22 @@ test('the voice guard looks where the app looks, inside the archive folder', () 
   assert.match(body, /model\.onnx/, 'and the second one');
   assert.doesNotMatch(body, /Test-Path \(Join-Path \$root 'voices\.bin'\)/, 'not one level up');
 });
+
+test('the voice addon the workers require is a dependency, and on the 1.x API', () => {
+  // The build died in one second at "Build installer and portable exe": the
+  // first thing `npm run dist` does is make the fixed voice lines, and that
+  // spawns companion/src/voice/engine-worker.js, which requires
+  // sherpa-onnx-node. Nothing installed it — it was named in asarUnpack and in
+  // THIRD-PARTY.md and nowhere in package.json — so on a clean checkout the
+  // worker exited before it said a word.
+  const pkg = require('../package.json');
+  const dep = pkg.dependencies['sherpa-onnx-node'];
+  assert.ok(dep, 'a clean npm ci must install it: the packaged app needs it too');
+  assert.equal(pkg.devDependencies['sherpa-onnx-node'], undefined, 'it ships, so it is not a devDependency');
+  // 2.0 rewrote the package (OfflineTts became non-streaming-tts.js); the two
+  // workers use the 1.x classes and were not ported to the new spelling.
+  assert.match(dep, /^[~^]?1\./, 'the addon is pinned to the API the workers call');
+  for (const worker of ['companion/src/voice/engine-worker.js', 'companion/src/voice/parakeet-worker.js']) {
+    assert.match(read(worker), /require\('sherpa-onnx-node'\)/, worker + ' is the reason');
+  }
+});
