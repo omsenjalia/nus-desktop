@@ -173,28 +173,74 @@ function listTree(dir, limit = 40) {
   return out.length ? out.join(', ') : '(nothing)';
 }
 
-// Expand-Archive first, because it is the platform's own unzipper. Then
-// System32\tar.exe, which reads zip and ships with Windows 10 and later: two
-// independent ways to fail means a bad download is distinguishable from a bad
-// tool.
-function extract(zipPath, dest) {
-  const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
-  const attempts = [
-    ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${dest}" -Force`]],
-    [tar, ['-xf', zipPath, '-C', dest]],
-  ];
-  const failures = [];
-  for (const [exe, args] of attempts) {
-    try {
-      execFileSync(exe, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
-      return;
-    } catch (err) {
-      const detail = String((err && (err.stderr || err.message)) || err).trim().split(/\r?\n/).slice(0, 4).join(' | ');
-      failures.push(`${path.basename(exe)}: ${detail}`);
-      console.log(`  ${path.basename(exe)} could not extract the zip: ${detail}`);
+// How many files are under a directory, for asking a tool whether it actually
+// did anything. Expand-Archive exits 0 on a non-terminating error, and a
+// PowerShell error record is not an exception, so the exit code proves nothing
+// on its own: the first red run of this step reported success and put zero
+// files on disk. The output is captured for the same reason - the reason it
+// gave was going to stderr and being thrown away.
+function countFiles(dir) {
+  let n = 0;
+  const walk = (d) => {
+    let entries;
+    try { entries = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.isDirectory()) walk(path.join(d, entry.name));
+      else n++;
     }
+  };
+  walk(dir);
+  return n;
+}
+
+function runTool(exe, args) {
+  try {
+    const out = execFileSync(exe, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
+    return { ok: true, output: String(out || '').trim() };
+  } catch (err) {
+    const output = `${(err && err.stdout) || ''}\n${(err && err.stderr) || ''}`.trim() || String((err && err.message) || err);
+    return { ok: false, output };
+  }
+}
+
+const oneLine = (text, lines = 6) =>
+  String(text || '').trim().split(/\r?\n/).map((l) => l.trim()).filter(Boolean).slice(0, lines).join(' | ');
+
+// Expand-Archive first, because it is the platform's own unzipper and needs no
+// download. Then System32\tar.exe, which reads zip and has shipped with
+// Windows 10 and later: two independent tools means a bad download is
+// distinguishable from a bad unzipper.
+//
+// A tool only counts as having worked if the file count went up. That check is
+// the whole point: the tool that "succeeded" in CI extracted nothing.
+function extract(zipPath, dest, { tools = defaultTools(zipPath, dest), run = runTool } = {}) {
+  const failures = [];
+  for (const tool of tools) {
+    const before = countFiles(dest);
+    const result = run(tool.exe, tool.args);
+    const added = countFiles(dest) - before;
+    if (result.ok && added > 0) return added;
+    const detail = result.ok
+      ? `exited 0 but extracted ${added} files${result.output ? ' after: ' + oneLine(result.output) : ''}`
+      : oneLine(result.output) || 'failed with no output';
+    failures.push(`${tool.label}: ${detail}`);
+    console.log(`  ${tool.label} did not extract the zip: ${detail}`);
   }
   throw new Error(`could not extract ${zipPath}: ${failures.join(' ; ')}`);
+}
+
+function defaultTools(zipPath, dest) {
+  const tar = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'tar.exe');
+  return [
+    {
+      label: 'Expand-Archive',
+      exe: 'powershell.exe',
+      // $ErrorActionPreference makes the cmdlet's non-terminating error a
+      // failure, so the exit code means what it looks like it means.
+      args: ['-NoProfile', '-NonInteractive', '-Command', `$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath "${zipPath}" -DestinationPath "${dest}" -Force`],
+    },
+    { label: 'tar.exe', exe: tar, args: ['-xf', zipPath, '-C', dest] },
+  ];
 }
 
 async function main() {
@@ -209,13 +255,13 @@ async function main() {
   const zipPath = path.join(vendorDir, 'whisper-bin-x64.zip');
   if (!findExe(vendorDir)) {
     await download(BIN_URL, zipPath, { zip: true });
-    extract(zipPath, vendorDir);
+    const added = extract(zipPath, vendorDir);
     fs.rmSync(zipPath, { force: true });
     // The names, before anything is removed. The first red run of this step
     // said "binary not found" over a directory that pruning had already
     // emptied: a symptom with the evidence deleted. Now the log carries the
-    // layout of whatever the release shipped.
-    console.log(`  extracted: ${listTree(vendorDir, 20)}`);
+    // layout of whatever the release shipped, and how much of it arrived.
+    console.log(`  extracted ${added} files: ${listTree(vendorDir, 20)}`);
   }
   // Identify before deleting, not after. The old order pruned what it did not
   // recognise and then reported that nothing was there.
@@ -245,6 +291,8 @@ module.exports = {
   MODEL_BASE_URL,
   MODEL_SMALL_URL,
   adopt,
+  countFiles,
+  defaultTools,
   download,
   extract,
   findAll,

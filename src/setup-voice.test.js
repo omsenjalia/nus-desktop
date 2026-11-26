@@ -113,6 +113,62 @@ test('a zip that has already been unpacked is not downloaded again', () => {
   assert.equal(setup.findExe(dir), path.join(dir, 'main.exe'), 'and main.exe is the fallback the app also reads');
 });
 
+test('a tool that exits 0 and extracts nothing has not extracted', async () => {
+  // The bug CI found: Expand-Archive reported success, wrote no file, and the
+  // step carried on to fail with "binary not found" a few lines later. A
+  // PowerShell error record is not an exception unless $ErrorActionPreference
+  // says so, so the exit code is not evidence — the bytes on disk are.
+  const dir = tmpdir();
+  const zip = path.join(dir, 'whisper-bin-x64.zip');
+  fs.writeFileSync(zip, ZIP);
+  const dest = path.join(dir, 'out');
+  fs.mkdirSync(dest);
+
+  const tools = [
+    { label: 'Expand-Archive', exe: 'powershell.exe', args: [] },
+    { label: 'tar.exe', exe: 'tar.exe', args: [] },
+  ];
+  const run = (exe) => {
+    if (exe === 'tar.exe') {
+      fs.writeFileSync(path.join(dest, 'whisper-cli.exe'), 'MZ');
+      return { ok: true, output: '' };
+    }
+    // Exit 0, no files, and a message that used to be discarded.
+    return { ok: true, output: 'Expand-Archive : The archive entry was compressed using an unsupported compression method.' };
+  };
+
+  const added = setup.extract(zip, dest, { tools, run });
+  assert.equal(added, 1, 'the second tool is the one that worked');
+  assert.equal(fs.existsSync(path.join(dest, 'whisper-cli.exe')), true);
+});
+
+test('and if no tool extracts anything, the message carries what they said', async () => {
+  const dir = tmpdir();
+  const dest = path.join(dir, 'out');
+  fs.mkdirSync(dest);
+  const tools = [{ label: 'Expand-Archive', exe: 'powershell.exe', args: [] }];
+  await assert.rejects(
+    async () => setup.extract(path.join(dir, 'x.zip'), dest, { tools, run: () => ({ ok: true, output: 'nothing to see' }) }),
+    /Expand-Archive: exited 0 but extracted 0 files after: nothing to see/,
+  );
+  await assert.rejects(
+    async () => setup.extract(path.join(dir, 'x.zip'), dest, {
+      tools, run: () => ({ ok: false, output: 'Cannot open file\r\nas it is not a valid archive' }),
+    }),
+    /Cannot open file \| as it is not a valid archive/,
+    'a multi-line tool message becomes one readable line',
+  );
+});
+
+test('the PowerShell attempt asks for terminating errors', () => {
+  // Otherwise the cmdlet writes an error and the process still exits 0.
+  const [, expand] = setup.defaultTools('a.zip', 'out');
+  const [powershell] = setup.defaultTools('a.zip', 'out');
+  assert.match(powershell.args.join(' '), /\$ErrorActionPreference = 'Stop'/);
+  assert.match(powershell.args.join(' '), /Expand-Archive -LiteralPath/);
+  assert.match(expand.exe, /tar\.exe$/);
+});
+
 test('a versioned CLI is accepted, renamed to the name the app spawns', () => {
   // The release zip carries whatever name the build produced. whisper-cli.exe
   // is what src/stt-local.js spawns, so a versioned spelling is adopted and
