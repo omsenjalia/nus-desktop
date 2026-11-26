@@ -49,22 +49,22 @@ jobs:
         run: npm ci
 
       # src/config.js is gitignored and required at startup, so a clean checkout
-      # has nothing for src/main.js to require. write-config refuses to run on a
-      # missing value, so every optional integration is passed as an empty
-      # string on purpose: absent means absent, not "the secret did not resolve".
+      # has nothing for src/main.js to require. This build has no server and no
+      # account, so with no secrets set it writes empty values, which the app
+      # reports as "not configured" (isGoogleCalendarConfigured and friends).
+      #
+      # --allow-empty exists for exactly this: the first run of this workflow
+      # failed here because write-config treats an empty value as missing, and
+      # setting the variables to '' in PowerShell did not change that. The flag
+      # is deliberate rather than a weakening: without it a genuine deployment
+      # that forgot a key still fails loudly.
       - name: Write src/config.js
         shell: pwsh
         env:
           NUS_GCAL_CLIENT_ID: ${{ secrets.NUS_GCAL_CLIENT_ID }}
           NUS_GCAL_CLIENT_SECRET: ${{ secrets.NUS_GCAL_CLIENT_SECRET }}
           NUS_OUTLOOK_CLIENT_ID: ${{ secrets.NUS_OUTLOOK_CLIENT_ID }}
-        run: |
-          $env:NUS_SUPABASE_URL = ''
-          $env:NUS_SUPABASE_ANON_KEY = ''
-          foreach ($n in 'NUS_GCAL_CLIENT_ID','NUS_GCAL_CLIENT_SECRET','NUS_OUTLOOK_CLIENT_ID') {
-            if (-not (Test-Path env:$n)) { Set-Item "env:$n" '' }
-          }
-          node scripts/write-config.js
+        run: node scripts/write-config.js --allow-empty
 
       - name: Test
         run: npm test
@@ -99,12 +99,17 @@ jobs:
           Remove-Item $archive
           if (-not (Test-Path (Join-Path $root 'voices.bin'))) { Get-ChildItem -Recurse $root | Out-String | Write-Host; throw 'the voice files did not land in vendor/voice' }
 
-      - name: Check the voice lines are all present
-        run: node scripts/make-voice-lines.js --check
-
+      # `npm run dist` makes the fixed lines as its first act, so there is no
+      # --check before it: on a clean checkout the lines do not exist yet, and a
+      # guard that always fails guards nothing. The check that matters is after,
+      # when they are supposed to be there.
       - name: Build installer and portable exe
         if: ${{ !inputs.smoke_only }}
         run: npm run dist -- --publish never
+
+      - name: Check the voice lines were made
+        if: ${{ !inputs.smoke_only }}
+        run: node scripts/make-voice-lines.js --check
 
       # The asar scan is the same one the Mac build runs: it fails the build if
       # anything that must not ship is packed.

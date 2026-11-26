@@ -4,7 +4,7 @@
 # attached to the release by hand (docs/release.md §5). A release is public the
 # moment it exists, so that step stays a human command.
 #
-# Needs five repository secrets, set once:
+# Optionally takes these repository secrets (all may be unset):
 #   NUS_SUPABASE_URL, NUS_SUPABASE_ANON_KEY,
 #   NUS_GCAL_CLIENT_ID, NUS_GCAL_CLIENT_SECRET, NUS_OUTLOOK_CLIENT_ID
 # They render the gitignored src/config.js (scripts/write-config.js).
@@ -42,7 +42,9 @@ jobs:
           NUS_GCAL_CLIENT_ID: ${{ secrets.NUS_GCAL_CLIENT_ID }}
           NUS_GCAL_CLIENT_SECRET: ${{ secrets.NUS_GCAL_CLIENT_SECRET }}
           NUS_OUTLOOK_CLIENT_ID: ${{ secrets.NUS_OUTLOOK_CLIENT_ID }}
-        run: node scripts/write-config.js
+        # A personal build has no server, so an unset secret is a supported
+        # state rather than a failure (see build-windows.yml for the long note).
+        run: node scripts/write-config.js --allow-empty
 
       - name: Test
         run: npm test

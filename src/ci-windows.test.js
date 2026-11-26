@@ -98,10 +98,41 @@ test('the workflow asks for no server credentials', () => {
 });
 
 test('the config step cannot fail on an unset optional secret', () => {
-  // write-config exits on a missing value, so an unset Google or Outlook secret
-  // would fail the build for a feature nobody asked for. The step fills them.
+  // The first run of this workflow died here: write-config treats an empty
+  // value as missing, and setting the variables to '' in PowerShell does not
+  // satisfy it. The step now asks for an empty-tolerant config by flag.
   const body = stepBody('Write src/config.js');
-  assert.match(body, /Set-Item "env:\$n" ''/, 'missing optional secrets become empty strings');
+  assert.match(body, /write-config\.js --allow-empty/, 'the step passes --allow-empty');
+  assert.doesNotMatch(body, /Set-Item "env:/, 'no PowerShell dance is needed to fake emptiness');
+});
+
+test('the voice-line guard runs after the lines are built, not before', () => {
+  // `make-voice-lines --check` exits 1 when the lines are missing, and they are
+  // made by `npm run dist` itself. Putting the check first made it a guard that
+  // fails on every clean checkout, which is a guard that means nothing.
+  const at = (needle) => workflow.split('\n').findIndex((l) => l.includes(needle));
+  const check = at('make-voice-lines.js --check');
+  const build = at('npm run dist -- --publish never');
+  assert.ok(build > 0, 'the build step exists');
+  assert.ok(check > build, 'the check comes after the build');
+});
+
+test('an unset config value is empty, not the word undefined', () => {
+  // The generated file is read by truthiness tests, and the string "undefined"
+  // is truthy. Rendering an absent variable with JSON.stringify(String(undefined))
+  // produced exactly that; this pins the fix.
+  const src = read('scripts/write-config.js');
+  assert.match(src, /const v = \(name\) => JSON\.stringify\(String\(process\.env\[name\] \|\| ''\)\.trim\(\)\)/);
+  assert.doesNotMatch(src, /String\(process\.env\[name\]\)\.trim\(\)/, 'no bare String(undefined)');
+});
+
+test('the generated config does not let an empty env var win at run time', () => {
+  // `process.env.X || 'value'` meant a var set to '' in CI overrode the value
+  // the generator was told to write, which is how "configured" could become
+  // truthy-but-empty.
+  const gen = read('scripts/write-config.js');
+  const body = gen.slice(gen.indexOf('const source = `'), gen.indexOf('`;\n\nfunction isSupabaseConfigured'));
+  assert.doesNotMatch(body, /process\.env\.NUS_/, 'the written file carries values, not env reads');
 });
 
 test('what the code reads from resources is what the builder puts there', () => {
