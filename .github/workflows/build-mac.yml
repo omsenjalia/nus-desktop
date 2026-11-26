@@ -32,8 +32,24 @@ jobs:
           node-version: 22
           cache: npm
 
+      # Same reason as the Windows build: electron and electron-builder download
+      # their own toolchains outside node_modules, and a Mac packaging job is
+      # mostly that download if it is not cached.
+      - name: Cache the Electron binary and the builder toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ runner.temp }}/electron-cache
+            ${{ runner.temp }}/builder-cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            electron-${{ runner.os }}-
+
       - name: Install dependencies
         run: npm ci
+        env:
+          ELECTRON_CACHE: ${{ runner.temp }}/electron-cache
+          ELECTRON_BUILDER_CACHE: ${{ runner.temp }}/builder-cache
 
       - name: Write src/config.js from secrets
         env:

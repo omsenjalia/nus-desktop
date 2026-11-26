@@ -79,14 +79,58 @@ test('the voice model is fetched, and against the same pin the app checks', () =
   // vendor/ is gitignored: nothing in a clean checkout has the model, and
   // `npm run dist` starts with a script that needs it.
   assert.match(read('.gitignore'), /^vendor\/$/m, 'vendor is not in the tree');
-  const body = stepBody('Fetch the Fable voice model for the pre-built lines');
-  const pinned = body.match(/\$want = '([0-9a-f]{64})'/);
-  assert.ok(pinned, 'the fetch pins a full 64-character hash, not a prefix');
+
+  // The pin lives in the workflow-level env, because the model cache, the
+  // archive cache and the lines cache all key on it. It must be the whole hash:
+  // a prefix would let a different model through.
+  const declared = workflow.match(/^ {2}FABLE_PIN: ([0-9a-f]+)$/m);
+  assert.ok(declared, 'FABLE_PIN is declared once, at the top');
+  assert.equal(declared[1].length, 64, 'a full SHA-256, not a prefix');
 
   const voice = read('companion/src/voice/index.js');
-  assert.ok(voice.includes(pinned[1]), 'the workflow pin is the one in companion/src/voice/index.js');
+  assert.ok(voice.includes(declared[1]), 'the workflow pin is the one in companion/src/voice/index.js');
+
+  const body = stepBody('Fetch the Fable voice model for the pre-built lines');
   assert.match(body, /Get-FileHash -Algorithm SHA256/, 'it checks the hash');
+  assert.match(body, /\$env:FABLE_PIN/, 'against the declared pin');
   assert.match(body, /-ne \$want/, 'and fails on a mismatch rather than carrying on');
+  // A cache that goes bad must not poison every later run.
+  assert.match(body, /Remove-Item \$archive -Force/, 'a bad cached archive is removed, not kept');
+});
+
+test('every cache is keyed on something that changes when its contents change', () => {
+  // A cache that outlives its contents serves stale files forever. Each one is
+  // keyed on the pin or the sources that decide what is inside it.
+  const caches = [...workflow.matchAll(/- name: Cache ([^\n]+)\n([\s\S]*?)(?=\n {6}- |\n {6}uses:|$)/g)];
+  assert.equal(caches.length, 4, 'four caches: electron, whisper, voice lines, Fable archive');
+
+  const key = (name) => {
+    const c = caches.find((m) => m[1].toLowerCase().includes(name.toLowerCase()));
+    assert.ok(c, 'the ' + name + ' cache exists');
+    const k = c[2].match(/^\s+key: (.+)$/m);
+    assert.ok(k, 'the ' + name + ' cache has a key');
+    return k[1];
+  };
+  assert.match(key('Electron'), /hashFiles\('package-lock\.json'\)/, 'npm lock changes');
+  assert.match(key('whisper'), /whisper-b4938/, 'the pinned tag');
+  assert.match(key('voice lines'), /FABLE_PIN/, 'the model pin');
+  assert.match(key('voice lines'), /hashFiles\(/, 'and the sources that define the lines');
+  assert.match(key('voice archive'), /FABLE_PIN/, 'the model pin');
+
+  // No cache is shared across operating systems: a Windows electron build in a
+  // Linux cache is a download that silently does not happen.
+  for (const m of caches) assert.match(m[2], /runner\.os|hashFiles|b4938|FABLE_PIN/);
+});
+
+test('a cache hit never skips the hash check', () => {
+  // The point of caching the archive is to save the download, not the
+  // verification. If a restored archive were trusted, the pin would only guard
+  // the first run.
+  const body = stepBody('Fetch the Fable voice model for the pre-built lines');
+  const hashAt = body.indexOf('Get-FileHash');
+  const unpackAt = body.indexOf('-xjf');
+  assert.ok(hashAt > 0 && unpackAt > hashAt, 'the hash is checked before anything is unpacked');
+  assert.match(body, /restored from cache; verifying it anyway/, 'and the log says so');
 });
 
 test('the workflow asks for no server credentials', () => {

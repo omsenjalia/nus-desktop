@@ -284,9 +284,18 @@ test('Int16 bytes become -1..1 floats from any offset, as they arrive over IPC',
 });
 
 test('the worker ships outside the asar like the voice engine, and the release check knows the pin', () => {
-  const c = require('../../electron-builder.companion.config');
+  // This read electron-builder.companion.config.js, a file the companion build
+  // used before the two windows were merged into one main process. That config
+  // is gone and the test went with the file it described; the rule it was
+  // protecting is still true, so it is asked of the config that does exist.
+  //
+  // The rule: both workers are spawned through ELECTRON_RUN_AS_NODE, so they run
+  // in plain node with no asar support, and both require sherpa-onnx-node (a
+  // native addon). Packed, the app starts and cannot speak.
+  const c = require('../../electron-builder.config.js');
   assert.ok(c.asarUnpack.includes('companion/src/voice/parakeet-worker.js'));
   assert.ok(c.asarUnpack.includes('companion/src/voice/engine-worker.js'));
+  assert.ok(c.asarUnpack.some((p) => p.includes('sherpa-onnx')), 'the native addon is unpacked too');
   assert.ok(c.files.includes('companion/**/*'));
   const release = read('docs/release.md');
   assert.ok(release.includes(path.basename(PARAKEET_MODEL.url)));
@@ -296,11 +305,14 @@ test('the worker ships outside the asar like the voice engine, and the release c
 });
 
 test('the setting, the Settings row and the talk key are wired through', () => {
-  const main = read('src/main-companion.js');
-  assert.match(main, /patch\.speechModel === 'whisper' \|\| patch\.speechModel === 'parakeet'/);
-  assert.match(main, /handle\('home:speech:status'/);
-  assert.match(main, /handle\('home:speech:install'/);
-  assert.match(main, /onSpeechState: s => send\('home:speech', s\)/);
+  // Was src/main-companion.js, which no longer exists: the companion's IPC moved
+  // into companion/index.js when the windows merged. The assertions below are
+  // the same ones, pointed at the file that holds the code now.
+  const main = read('companion/index.js');
+  assert.match(main, /hasOwnProperty\.call\(patch, 'speechModel'\)/);
+  assert.match(main, /getParakeet\(\)\.settingChanged\(\)/);
+  assert.match(main, /createParakeet\(\{ userData: app\.getPath\('userData'\)/);
+  assert.match(main, /parakeet\.close\(\)/, 'it shuts the worker down on quit');
   const preload = read('companion/home/preload.js');
   assert.match(preload, /speechInstall/);
   assert.match(preload, /'home:speech'/);

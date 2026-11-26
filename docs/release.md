@@ -172,6 +172,30 @@ notarize on its own. Then add a `zip` target to `mac.target` so
 `latest-mac.yml` is produced, upload it with the release, and delete the
 darwin early-return in `src/updater.js`.
 
+## 6. The pinned models
+
+Two models are downloaded at run time and pinned by SHA-256. Check both against
+the release assets before a release, because upstream re-uploads them without
+changing the URL (this happened to both, and to the Kokoro archive twice):
+
+```
+# speech to text, CC-BY-4.0 (THIRD-PARTY.md)
+gh api repos/k2-fsa/sherpa-onnx/releases/tags/asr-models \
+  --jq '.assets[]|select(.name=="sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8.tar.bz2")|.size'
+# 487211443
+
+# speech, Apache-2.0 (THIRD-PARTY.md)
+gh api repos/k2-fsa/sherpa-onnx/releases/tags/tts-models \
+  --jq '.assets[]|select(.name=="kokoro-multi-lang-v1_0.tar.bz2")|.size'
+```
+
+A size that does not match means the file changed and the pin in
+`companion/src/voice/parakeet.js` or `index.js` must be re-checked and
+re-benched. `companion/test/parakeet.test.js` fails if this section stops
+naming the model, and if `THIRD-PARTY.md` stops carrying the attribution: the
+Parakeet weights are CC-BY-4.0, so shipping without it is a licence breach, not
+a missing document.
+
 ## What is deliberately not automated
 
 - Pushing to GitHub and creating the release. A release is public the moment

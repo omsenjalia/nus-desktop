@@ -164,7 +164,16 @@ function createFastPointer({ jev, mode, log, thresholds, deadlineMs, heuristic =
       return Object.assign(gate(answers, options, input.elements, thresholds, input.planned), { ms: Date.now() - t0, options: options.size, provider: 'words' });
     }
     let timer;
-    const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(null), budget); if (timer.unref) timer.unref(); });
+    // The timer is deliberately NOT unref'd. It used to be, to avoid holding the
+    // app open for up to `budget` ms, and it had a worse failure: with nothing
+    // else keeping the event loop alive, node exits before the timer fires, the
+    // awaited promise never settles, and the caller's await hangs forever. The
+    // test runner reports that as cancelledByParent ("Promise resolution is
+    // still pending but the event loop has already resolved") and fails the
+    // process. In the app the loop is always busy so it never showed; a pick is
+    // also only ever in flight while someone is doing something, and 900 ms of
+    // ref'd timer during an active pick costs nothing.
+    const deadline = new Promise((resolve) => { timer = setTimeout(() => resolve(null), budget); });
     let res = null;
     try {
       res = await Promise.race([client.systemOne({ state, questions, timeoutMs: budget }).catch((e) => { say('fast: jev failed: ' + e.message); return null; }), deadline]);
