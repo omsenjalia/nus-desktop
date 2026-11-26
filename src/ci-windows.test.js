@@ -214,3 +214,23 @@ test('a failed whisper fetch says why, in the one place that can be read', () =>
   assert.match(body, /exit \$code/, 'and the step still fails');
   assert.match(workflow, /name: setup-voice-output/, 'with the full log attached as an artifact');
 });
+
+test('a failed Fable fetch says why too, and how big the file that failed was', () => {
+  // The step downloads 334 MB and then refuses it, and the run log is
+  // unreadable from outside. The annotation carries the exception and the size
+  // on disk, which is the difference between "the network truncated it" and
+  // "the pin is stale" — the two causes that produce the same hash mismatch.
+  const body = stepBody('Fetch the Fable voice model for the pre-built lines');
+  assert.match(body, /::error title=Fable voice archive failed::/, 'the reason is an annotation');
+  assert.match(body, /Get-Item \$archive\)\.Length/, 'the size of what landed is part of it');
+  assert.match(body, /exit 1/, 'and the step still fails');
+
+  // The expected size is not decoration: it is the release asset's size, and it
+  // is the same number companion/src/voice/index.js records for the model the
+  // app will accept.
+  const declared = Number(workflow.match(/^ {2}FABLE_BYTES: (\d+)$/m)[1]);
+  const voice = read('companion/src/voice/index.js');
+  const asset = voice.match(/kokoro-multi-lang-v1_0\.tar\.bz2[^}]*?bytes: (\d+)/);
+  assert.ok(asset, 'the model declares the size it expects');
+  assert.equal(declared, Number(asset[1]), 'the workflow checks the size the app checks');
+});

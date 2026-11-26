@@ -41,6 +41,10 @@ permissions:
 env:
   FABLE_ARCHIVE: kokoro-multi-lang-v1_0.tar.bz2
   FABLE_PIN: 60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4
+  # The same asset's size, from the release API. A download that stops early
+  # hashes wrong, and "hash mismatch" alone does not say whether the network
+  # truncated it or the pin is stale; the size says which.
+  FABLE_BYTES: 349886476
 
 jobs:
   build:
@@ -197,31 +201,45 @@ jobs:
           # the hash is checked before anything is unpacked.
           ARCHIVE_DIR: vendor\voice-archive
         run: |
-          $url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2'
-          $root = Join-Path $env:GITHUB_WORKSPACE 'vendor\voice'
-          $keep = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR
-          New-Item -ItemType Directory -Force -Path $root, $keep | Out-Null
-          $archive = Join-Path $keep $env:FABLE_ARCHIVE
-          if (-not (Test-Path $archive)) {
-            Write-Host 'Fable archive not cached; downloading.'
-            Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
-          } else {
-            Write-Host 'Fable archive restored from cache; verifying it anyway.'
+          # A 334 MB download from a release page, and a failure here has to be
+          # readable from outside the run: the log lives in storage nobody can
+          # open, so the reason goes into an annotation, with the size of what
+          # landed beside it. Same deal the Test step made.
+          $archive = Join-Path (Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR) $env:FABLE_ARCHIVE
+          try {
+            $url = 'https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2'
+            $root = Join-Path $env:GITHUB_WORKSPACE 'vendor\voice'
+            $keep = Join-Path $env:GITHUB_WORKSPACE $env:ARCHIVE_DIR
+            New-Item -ItemType Directory -Force -Path $root, $keep | Out-Null
+            $archive = Join-Path $keep $env:FABLE_ARCHIVE
+            if (-not (Test-Path $archive)) {
+              Write-Host 'Fable archive not cached; downloading.'
+              Invoke-WebRequest -Uri $url -OutFile $archive -MaximumRetryCount 3
+            } else {
+              Write-Host 'Fable archive restored from cache; verifying it anyway.'
+            }
+            $size = (Get-Item $archive).Length
+            Write-Host "Fable archive is $size bytes (the release has $env:FABLE_BYTES)."
+            # The whole pin from companion/src/voice/index.js, not a prefix: the
+            # app refuses a model that does not match this hash, so the build must
+            # refuse the same one rather than shipping it and failing at run time.
+            $want = $env:FABLE_PIN
+            $got = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
+            if ($got -ne $want) {
+              # A cached archive that fails its pin is worse than no cache: it
+              # would fail every later run too. Drop it and let the next run
+              # download cleanly.
+              Remove-Item $archive -Force
+              throw "voice archive hash $got is not $want (removed the bad archive; re-run)"
+            }
+            & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $root
+            if (-not (Test-Path (Join-Path $root 'voices.bin'))) { Get-ChildItem -Recurse $root | Out-String | Write-Host; throw 'the voice files did not land in vendor/voice' }
+          } catch {
+            $size = if (Test-Path $archive) { "$((Get-Item $archive).Length) bytes" } else { 'no file' }
+            $msg = "$($_.Exception.Message) [archive: $size, expected $env:FABLE_BYTES]"
+            Write-Output "::error title=Fable voice archive failed::$($msg -replace "`r?`n", '%0A')"
+            exit 1
           }
-          # The whole pin from companion/src/voice/index.js, not a prefix: the
-          # app refuses a model that does not match this hash, so the build must
-          # refuse the same one rather than shipping it and failing at run time.
-          $want = $env:FABLE_PIN
-          $got = (Get-FileHash -Algorithm SHA256 -Path $archive).Hash.ToLower()
-          if ($got -ne $want) {
-            # A cached archive that fails its pin is worse than no cache: it
-            # would fail every later run too. Drop it and let the next run
-            # download cleanly.
-            Remove-Item $archive -Force
-            throw "voice archive hash $got is not $want (removed the bad archive; re-run)"
-          }
-          & "$env:SystemRoot\System32\tar.exe" -xjf $archive -C $root
-          if (-not (Test-Path (Join-Path $root 'voices.bin'))) { Get-ChildItem -Recurse $root | Out-String | Write-Host; throw 'the voice files did not land in vendor/voice' }
 
       # `npm run dist` makes the fixed lines as its first act, so there is no
       # --check before it: on a clean checkout the lines do not exist yet, and a
