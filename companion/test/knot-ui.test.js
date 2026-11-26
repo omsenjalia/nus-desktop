@@ -338,7 +338,10 @@ test('touch pad wiring: same controls as the hit test, in the page, in main, bef
   assert.match(main, /process\.platform === 'win32' && process\.env\.NUS_NO_TOUCH_PAD !== '1'/);
   assert.match(main, /topmost: \(hwnd\) => \(probeReady\(\) \? probe\.request\('win\.topmost', \{ hwnd \}, 1500\) : null\)/);
   assert.match(main, /allowed: !\(agent && agent\.active\(\) && !agent\.asking\(\)\) && handsMouseOps === 0/, 'it stands aside exactly when the overlay does');
-  assert.ok(main.indexOf('touchPad.tick(') < main.indexOf("if (!win || win.isDestroyed() || !win.isVisible()) return;\n    if (++topmostTick"), 'a hidden overlay still reaches the pad, which hides');
+  // \s* rather than a literal \n: the working tree is LF, but a test that only
+  // passes on LF is a test that fails on somebody else's checkout (see
+  // .gitattributes and src/line-endings.test.js).
+  assert.ok(main.indexOf('touchPad.tick(') < main.search(/if \(!win \|\| win\.isDestroyed\(\) \|\| !win\.isVisible\(\)\) return;\s+if \(\+\+topmostTick/), 'a hidden overlay still reaches the pad, which hides');
   assert.match(main, /if \(touchPad\) touchPad\.close\(\);\s+if \(win && !win\.isDestroyed\(\)\) win\.destroy\(\);/);
   assert.match(html, /<script src="touch-forward\.js[^"]*"><\/script>\s+<script src="renderer\.js/);
   const pre = fs.readFileSync(path.join(root, 'preload.js'), 'utf8');

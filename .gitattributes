@@ -1,0 +1,46 @@
+# Line endings, decided once.
+#
+# This repository is developed on Windows and built on Linux and macOS CI. The
+# suite reads source files as text and asserts on their exact contents, and
+# several tests search for a snippet that spans two lines (`"...();\n  ..."`).
+# On Windows the runner checked the tree out with CRLF, every one of those
+# searches missed, and 17 tests failed in CI while passing on Linux with the
+# same commit. The first Windows build died at the Test step because of it, and
+# the log was not readable from outside, so the failure looked like code.
+#
+# The fix is here rather than in 17 tests: one rule that makes the working tree
+# identical on every platform, so a test that spans a line is testing the code
+# and not the checkout.
+#
+# `text=auto` normalises to LF in the repository. `eol=lf` forces LF in the
+# working tree too, including on Windows. Nothing here needs CRLF: no fixture is
+# compared byte-for-byte against a Windows-native file, and Node, Git, npm and
+# the bundler all read LF.
+* text=auto eol=lf
+
+# Binary files must never be normalised: a rewritten byte is a corrupt binary.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.webp binary
+*.wav binary
+*.mp3 binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
+*.zip binary
+*.tar binary
+*.bz2 binary
+*.exe binary
+*.dll binary
+*.node binary
+*.asar binary
+
+# A Windows batch file is the one thing that genuinely wants CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
