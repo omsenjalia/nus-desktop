@@ -273,3 +273,15 @@ test('the voice addon the workers require is a dependency, and on the 1.x API', 
     assert.match(read(worker), /require\('sherpa-onnx-node'\)/, worker + ' is the reason');
   }
 });
+
+test('the asar scan reports what it found, not just that it failed', () => {
+  // The report is the whole value of the step: a list of forbidden entries, or
+  // of required files that are not there. The first time it failed, the run
+  // said "exit code 1" and the JSON went to a log nobody could open.
+  const body = stepBody('Scan the packed asar');
+  assert.match(body, /package-security-check\.js dist\/win-unpacked\/resources\/app\.asar/, 'it scans the app the builder wrote');
+  assert.match(body, /::error title=packed asar scan failed::/);
+  assert.match(body, /-Tail 60/, 'the report is at the end of the output');
+  assert.match(body, /exit \$code/, 'and the step still fails');
+  assert.match(workflow, /name: asar-scan-output/, 'with the log attached as an artifact');
+});

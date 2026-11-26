@@ -271,9 +271,25 @@ jobs:
 
       # The asar scan is the same one the Mac build runs: it fails the build if
       # anything that must not ship is packed.
+      # The scan prints its findings as JSON and exits 1, and the first failure
+      # of this step was unreadable from outside like the others were: the whole
+      # point of the report is the list of paths in it. So it goes into the
+      # annotation and the artifact.
       - name: Scan the packed asar
         if: ${{ !inputs.smoke_only }}
-        run: node scripts/package-security-check.js dist/win-unpacked/resources/app.asar
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'asar-scan.log'
+          node scripts/package-security-check.js dist/win-unpacked/resources/app.asar 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $report = (Get-Content $log -Tail 60) -join "`n"
+            if ($report.Length -gt 60000) { $report = $report.Substring($report.Length - 60000) }
+            if (-not $report) { $report = 'the scan failed and printed nothing.' }
+            Write-Output "::error title=packed asar scan failed::$($report -replace "`r?`n", '%0A')"
+            Copy-Item $log (Join-Path $env:GITHUB_WORKSPACE 'asar-scan.log') -Force
+          }
+          exit $code
 
       # Launch the app we are about to publish. --smoke creates a window, opens
       # the database and starts the Companion, then quits itself; a package that
@@ -315,6 +331,14 @@ jobs:
         with:
           name: setup-voice-output
           path: setup-voice.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('asar-scan.log') != '' }}
+        with:
+          name: asar-scan-output
+          path: asar-scan.log
           if-no-files-found: ignore
           retention-days: 14
 
