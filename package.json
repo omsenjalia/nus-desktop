@@ -11,7 +11,7 @@
     "test:db": "node --test src/db.test.js",
     "dist": "node scripts/make-voice-lines.js && electron-builder --win --config electron-builder.config.js",
     "dist:mac": "electron-builder --mac --config electron-builder.config.js",
-    "test": "node --test src/*.test.js companion/test/*.test.js",
+    "test": "node --test 'src/*.test.js' 'companion/test/*.test.js'",
     "dist:check": "node scripts/package-security-check.js",
     "setup:voice": "node scripts/setup-voice.js"
   },

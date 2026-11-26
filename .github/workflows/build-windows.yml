@@ -99,8 +99,36 @@ jobs:
           NUS_OUTLOOK_CLIENT_ID: ${{ secrets.NUS_OUTLOOK_CLIENT_ID }}
         run: node scripts/write-config.js --allow-empty
 
+      # The test step failed twice in CI with nothing readable from outside: the
+      # run log lives in blob storage, and the annotations only said "exit code
+      # 1". A failure nobody can read is a failure that costs a day, so the
+      # failing test names are written into the annotations themselves, where
+      # they are visible in the UI and over the API without fetching the log.
+      #
+      # `npm test` is still what runs; this only instruments it.
       - name: Test
-        run: npm test
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:RUNNER_TEMP 'test.log'
+          npm test 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            $lines = Get-Content $log
+            $failed = $lines | Select-String -Pattern '^\s*not ok \d+ - ' | ForEach-Object { $_.Line.Trim() }
+            $summary = $lines | Select-String -Pattern '^# (pass|fail|cancelled|tests) ' | ForEach-Object { $_.Line.Trim() }
+            Write-Host '--- failing tests ---'
+            $failed | ForEach-Object { Write-Host $_ }
+            Write-Host '--- counts ---'
+            $summary | ForEach-Object { Write-Host $_ }
+            # Newest first, and short enough for the annotation limit.
+            $msg = (($failed + $summary) -join "`n")
+            if ($msg.Length -gt 60000) { $msg = $msg.Substring(0, 60000) }
+            if (-not $msg) { $msg = 'npm test failed but printed no "not ok" line; see the log artifact.' }
+            Write-Output "::error title=Test failures::$($msg -replace "`r?`n", '%0A')"
+            # Keep the whole log for the run, so nothing is ever unreadable again.
+            Copy-Item $log (Join-Path $env:GITHUB_WORKSPACE 'test-output.log') -Force
+          }
+          exit $code
 
       # ~65 MB of whisper.cpp plus the base model, from two hosts that are not
       # npm. Cached by the tag the script pins, so a new pin fetches again.
@@ -218,6 +246,16 @@ jobs:
         if: ${{ !inputs.smoke_only }}
         shell: pwsh
         run: Get-ChildItem dist -Include *.exe,*.blockmap,*.yml -Recurse | Select-Object FullName,Length | Format-Table -AutoSize | Out-String | Write-Host
+
+      # Always, even on failure: the run log is unreadable from outside, so this
+      # artifact is the only way to see what a failed test actually said.
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && hashFiles('test-output.log') != '' }}
+        with:
+          name: test-output
+          path: test-output.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - uses: actions/upload-artifact@v4
         if: ${{ !inputs.smoke_only }}

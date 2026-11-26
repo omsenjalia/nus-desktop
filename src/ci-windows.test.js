@@ -52,7 +52,7 @@ test('the asar the scan reads is at the path electron-builder writes', () => {
 });
 
 test('every artifact the workflow uploads has a name the builder is configured to produce', () => {
-  const block = workflow.slice(workflow.indexOf('upload-artifact'));
+  const block = workflow.slice(workflow.indexOf('name: jarvis-windows') - 400);
   const uploaded = [...block.matchAll(/^\s+dist\/(\S+)\s*$/gm)].map((m) => m[1]);
   assert.ok(uploaded.length >= 3, 'it uploads the installers: ' + uploaded.join(', '));
 
@@ -175,7 +175,7 @@ test('the generated config does not let an empty env var win at run time', () =>
   // the generator was told to write, which is how "configured" could become
   // truthy-but-empty.
   const gen = read('scripts/write-config.js');
-  const body = gen.slice(gen.indexOf('const source = `'), gen.indexOf('`;\n\nfunction isSupabaseConfigured'));
+  const body = gen.slice(gen.indexOf('const source = `'), gen.search(/`;\s*\n\s*function isSupabaseConfigured/));
   assert.doesNotMatch(body, /process\.env\.NUS_/, 'the written file carries values, not env reads');
 });
 
