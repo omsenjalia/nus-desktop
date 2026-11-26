@@ -36,6 +36,20 @@ const azure = ['AZURE_TENANT_ID', 'AZURE_CLIENT_ID', 'AZURE_CLIENT_SECRET', 'NUS
 const appleSigned = ['CSC_LINK', 'CSC_KEY_PASSWORD', 'APPLE_ID', 'APPLE_APP_SPECIFIC_PASSWORD', 'APPLE_TEAM_ID']
   .every((name) => Boolean(process.env[name]));
 
+// The Fable voice model is 334 MB of a ~460 MB installer. It ships inside on
+// purpose: the first word the app says should already be in the right voice, not
+// after a download (decided 2026-11-11). The app can also fetch it on first run —
+// companion/src/voice/index.js install() stays as the repair path for installs
+// whose bundled copy is missing — so a build made to test a code change can
+// leave it out and be a fifth of the size:
+//
+//   NUS_SKIP_VOICE_BUNDLE=1 npm run dist        (CI: the bundle_voice input)
+//
+// The pre-made lines stay in both builds: they are small, and they are what the
+// tour and the short replies speak. Without them the first minute after install
+// is the CPU burn this repository spent a release removing.
+const skipVoiceBundle = process.env.NUS_SKIP_VOICE_BUNDLE === '1';
+
 // Ad-hoc sign the packed .app when no Developer ID will sign it. Runs only for
 // the darwin target. Always re-signs: Electron's arm64 binary arrives with a
 // linker-only signature that passes `codesign -dv` but seals no resources, and
@@ -106,7 +120,7 @@ const config = {
       // Windows voice, which is the bug Pranav reported as "the hello line was
       // not heard". Missing folders are skipped, so a build made without
       // vendor/voice still packs; setup-voice and make-voice-lines fill them.
-      { from: 'vendor/voice', to: 'voice', filter: ['**/*'] },
+      ...(skipVoiceBundle ? [] : [{ from: 'vendor/voice', to: 'voice', filter: ['**/*'] }]),
       { from: 'vendor/voice-lines', to: 'voice-lines', filter: ['**/*'] },
     ],
     ...(azure ? {
@@ -166,6 +180,7 @@ const config = {
   publish: [{ provider: 'github', owner: 'omsenjalia', repo: 'nus-desktop' }],
 };
 
+if (skipVoiceBundle) console.log('[electron-builder] NUS_SKIP_VOICE_BUNDLE=1: the Fable model is not in this build; the app downloads it on first run.');
 if (azure) console.log('[electron-builder] Azure Trusted Signing is configured; the Windows installer will be signed.');
 else console.log('[electron-builder] No Windows signing credentials in the environment; building unsigned (SmartScreen will warn).');
 if (appleSigned) console.log('[electron-builder] Apple Developer ID + notarization credentials present; the mac app will be notarized.');
