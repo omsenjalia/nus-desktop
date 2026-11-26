@@ -21,13 +21,21 @@ const path = require('node:path');
 const ROOT = path.join(__dirname, '..');
 const read = (p) => fs.readFileSync(path.join(ROOT, p), 'utf8');
 
+// The list of test files, named with forward slashes on every platform.
+//
+// These names are not only paths: they are printed in messages and compared
+// against the forward-slash literals below (KNOWN, and the labels in the output).
+// path.join gives `companion\test\x.test.js` on Windows, so the one accepted
+// instance stopped matching its own allowlist and the guard failed on Windows
+// only — a test that was green everywhere the CI did not run. Node reads a
+// forward slash on Windows, so one spelling works for both jobs.
 function testFiles() {
   const out = [];
   for (const dir of ['src', 'companion/test']) {
     const full = path.join(ROOT, dir);
     if (!fs.existsSync(full)) continue;
     for (const name of fs.readdirSync(full)) {
-      if (name.endsWith('.test.js')) out.push(path.join(dir, name));
+      if (name.endsWith('.test.js')) out.push(dir + '/' + name);
     }
   }
   return out.sort();
@@ -86,7 +94,11 @@ test('a multi-line search uses a regex or a normaliser, never a bare "\\n"', () 
   const KNOWN = [
     'companion/test/cue-samples.test.js', // searches for a two-line snippet
   ];
-  const unexpected = fragile.filter((loc) => !KNOWN.some((k) => loc.startsWith(k)));
+  // Compared separator-insensitively as well: the names already carry '/', but
+  // this guard failed on Windows for exactly one reason — a `\` where the
+  // allowlist had a '/' — and a guard that only works on the platform the CI
+  // runs on is the failure it was written to catch.
+  const unexpected = fragile.filter((loc) => !KNOWN.some((k) => loc.replace(/\\/g, '/').startsWith(k)));
   assert.deepEqual(unexpected, [], 'multi-line string search that a CRLF checkout would break: ' + unexpected.join(', '));
 });
 
