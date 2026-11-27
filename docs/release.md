@@ -61,6 +61,14 @@ Voice needs no machine setup step: the whisper engine and model install from
 still exists for release machines that want the binaries pre-seeded, but it is
 not required and the app repairs a missing engine itself.
 
+Model ids retire and the settings file pins whatever was current when it was
+saved, so the Companion heals at ask time, not just at load: a 404/410 from a
+provider triggers one `/models` discovery, the pin moves to a working chat
+model (persisted to the shared settings file), and the ask is retried once.
+The load-time rewrite (`RETIRED_MODELS` in companion/src/store.js) still
+handles the ids known about at build time; the runtime heal covers the rest.
+Speech-to-text rides the same fast pin, so it heals on the same path.
+
 `npm run dist` reads `electron-builder.config.js` and produces
 `dist/JARVIS-Setup.exe`, `dist/JARVIS-Portable.exe`,
 `dist/JARVIS-Setup.exe.blockmap` and `dist/latest.yml`. The scan command reads

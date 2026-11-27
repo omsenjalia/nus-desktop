@@ -314,6 +314,8 @@ function nvidiaArgs(args) {
   return { ...args, baseURL: NVIDIA_BASE_URL, extra };
 }
 
+const { withModelHeal, persistPin } = require('./model-heal');
+
 // opts.ownKey: test settings.provider's own key even when something else would answer the
 // asks. The Test button in Settings uses it (0.1.36).
 function createLLM(settings, opts = {}) {
@@ -333,6 +335,15 @@ function createLLM(settings, opts = {}) {
 
   if (DEBUG) console.log('[DEBUG LLM] createLLM initialized:', { provider, model, isKeyPresent: !!apiKey, ready: (!!apiKey || !needsKey(provider)) && !!model });
 
+  // The pin for this provider and tier; unset means the lane override in
+  // params.model, which is healed in flight but not saved to the pin.
+  const pinTier = () => (settings.smart ? 'smart' : 'fast');
+  const pinnedModel = () => ((settings.models || {})[provider] || {})[pinTier()];
+  const baseUrl = provider === 'custom' ? customBaseUrl(settings) : '';
+  // A retired model used to fail every ask until the person found Settings
+  // and picked another. Discover, move the pin, retry once.
+  const heal = (tier, currentModel, onSwitch) => ({ provider, tier, currentModel, apiKey, baseUrl, onSwitch });
+
   return {
     provider, model, apiKey,
     // Ready means "an ask would reach a model": a key where one is needed, a
@@ -341,22 +352,43 @@ function createLLM(settings, opts = {}) {
     ready: (!!apiKey || !needsKey(provider)) && !!model && (provider !== 'custom' || !!customBaseUrl(settings)),
     async stream(params) {
       if (DEBUG) console.log('[DEBUG LLM] stream() invoked for provider:', provider);
-      const args = { apiKey, model, maxTokens, ...paramsWithComputer(params) };
-      if (provider === 'anthropic') return streamAnthropic(args);
-      if (provider === 'gemini') return geminiStream(args);
-      if (isOpenAICompatible(provider)) return streamOpenAI(openAIArgsFor(provider, args, settings));
-      throw new Error('unknown provider: ' + provider);
+      const tier = pinTier();
+      const wanted = pinnedModel();
+      const call = (modelId) => {
+        const args = { apiKey, model: modelId, maxTokens, ...paramsWithComputer(params) };
+        if (provider === 'anthropic') return streamAnthropic(args);
+        if (provider === 'gemini') return geminiStream(args);
+        if (isOpenAICompatible(provider)) return streamOpenAI(openAIArgsFor(provider, args, settings));
+        throw new Error('unknown provider: ' + provider);
+      };
+      return withModelHeal(heal(tier, wanted, (found) => {
+        console.log('[llm] ' + wanted + ' was retired by ' + provider + '; switching to ' + found);
+        persistPin(provider, tier, found);
+      }), call);
     },
     async complete(params = {}) {
       // params.model: one call on another model of the same provider (a problem
       // walkthrough wants the smart tier). Unset leaves the configured one.
       // params.onDelta: streamed text for callers that can use it as it arrives.
-      const args = { apiKey, maxTokens: params.maxTokens || 512, ...paramsWithComputer(params), model: params.model || model, onToken: params.onToken || params.onDelta || (() => {}) };
-      if (provider === 'gemini') return geminiComplete(args);
-      // The other SDKs stream fine; collect and return.
-      if (provider === 'anthropic') return streamAnthropic(args);
-      if (isOpenAICompatible(provider)) return streamOpenAI(openAIArgsFor(provider, args, settings));
-      throw new Error('unknown provider: ' + provider);
+      const tier = pinTier();
+      const pin = pinnedModel();
+      const wanted = params.model || pin;
+      // A lane may ask for its own model (an assignment's checker), but the
+      // lanes are built from the same tier pins, so a pin-named model moves
+      // the pin too; only a genuinely different id heals in flight only.
+      const pinned = (!params.model || params.model === pin) ? wanted : null;
+      const call = (modelId) => {
+        const args = { apiKey, maxTokens: params.maxTokens || 512, ...paramsWithComputer(params), model: modelId, onToken: params.onToken || params.onDelta || (() => {}) };
+        if (provider === 'gemini') return geminiComplete(args);
+        // The other SDKs stream fine; collect and return.
+        if (provider === 'anthropic') return streamAnthropic(args);
+        if (isOpenAICompatible(provider)) return streamOpenAI(openAIArgsFor(provider, args, settings));
+        throw new Error('unknown provider: ' + provider);
+      };
+      return withModelHeal(heal(tier, wanted, pinned ? (found) => {
+        console.log('[llm] ' + wanted + ' was retired by ' + provider + '; switching to ' + found);
+        persistPin(provider, tier, found);
+      } : undefined), call);
     }
   };
 }

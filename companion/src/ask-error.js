@@ -9,7 +9,7 @@
 // Pure, no Electron: the guide, Hands, the assignment helper and index.js all
 // call it. get-started.js keeps its own words for the key box ("paste it here").
 
-const NAMES = { gemini: 'Gemini', anthropic: 'Anthropic', openai: 'OpenAI', nvidia: 'Nvidia', cli: 'Claude Code', 'claude-code': 'Claude Code', 'claude (desktop)': 'Claude Code' };
+const NAMES = { gemini: 'Gemini', anthropic: 'Anthropic', openai: 'OpenAI', nvidia: 'Nvidia', cli: 'Claude Code', 'claude-code': 'Claude Code', 'claude (desktop)': 'Claude Code', groq: 'Groq', openrouter: 'OpenRouter', opencode: 'opencode go', ollama: 'Ollama', custom: 'the custom endpoint' };
 
 const NET = /ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ECONNRESET|ETIMEDOUT|fetch failed|network|getaddrinfo|socket hang up/i;
 const SIGNED_OUT = /cli_not_logged_in|not logged in|\/login|failed to authenticate|oauth|session expired/i;
@@ -57,7 +57,7 @@ function plainAskError(provider, raw) {
   if (/API key not valid|API_KEY_INVALID|invalid.{0,12}(api.?)?key|authentication|unauthori[sz]ed|\b401\b/i.test(text)) return Who + ' did not accept your key. Check it in ' + keys + '; the Test button there says what is wrong.';
   if (/PERMISSION_DENIED|SERVICE_DISABLED|forbidden|\b403\b/i.test(text)) return Who + ' refused this key. Check it in ' + keys + '.';
   if (/location|region|not supported in your/i.test(text)) return 'Gemini\'s free key does not work where you are. Claude Code or an Anthropic key in ' + keys + ' works instead.';
-  if (/\b404\b|\b410\b|not found|no longer available|end of life/i.test(text)) return Who + ' no longer offers the model Nūs asked for. Use another key in ' + keys + ' for now.';
+  if (/\b404\b|\b410\b|not found|no longer available|end of life/i.test(text)) return Who + ' no longer offers the model J.A.R.V.I.S asked for, and no other model could be found to use. Pick another provider in Settings > Companion AI, or use another key in ' + keys + '.';
   if (/SAFETY|blocked|content policy|refus/i.test(text)) return Who + ' would not answer that one. Try asking another way.';
   if (/incomplete model reply|max_tokens|MAX_TOKENS/i.test(text)) return 'The answer got cut off. Ask again, or ask for less at once.';
   if (/empty reply/i.test(text)) return Who + ' sent back nothing. Ask again.';

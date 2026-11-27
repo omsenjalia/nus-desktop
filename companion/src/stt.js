@@ -2,6 +2,7 @@
 // no audio API; we transcribe with whatever audio-capable key is available, and
 // fall back across providers. Returns { text, provider } or { text:'', error }.
 const { pcmToWav } = require('./wav');
+const { withModelHeal, persistPin } = require('./model-heal');
 
 async function transcribeOpenAI(apiKey, wav, model) {
   const OpenAI = require('openai');
@@ -44,7 +45,17 @@ function createSTT(settings) {
   }
   if (keys.openai) chain.push({ p: 'openai', fn: (wav) => transcribeOpenAI(keys.openai, wav, settings.sttModel) });
   const geminiModel = (settings.models && settings.models.gemini && settings.models.gemini.fast) || DEFAULT_GEMINI_STT_MODEL;
-  if (keys.gemini && process.env.NUS_NO_GEMINI !== '1') chain.push({ p: 'gemini', fn: (wav) => transcribeGemini(keys.gemini, wav, geminiModel) });
+  if (keys.gemini && process.env.NUS_NO_GEMINI !== '1') chain.push({ p: 'gemini', fn: (wav) => {
+    // The fast model is transcribing speech as well, so it gets the same
+    // retired-model discovery the asks get (a 404 here used to kill voice).
+    return withModelHeal({
+      provider: 'gemini', tier: 'fast', currentModel: geminiModel, apiKey: keys.gemini,
+      onSwitch: (found, previous) => {
+        console.log('[stt] ' + previous + ' was retired by gemini; switching to ' + found);
+        persistPin('gemini', 'fast', found);
+      },
+    }, (model) => transcribeGemini(keys.gemini, wav, model));
+  } });
 
   return {
     available: chain.length > 0,
